@@ -86,7 +86,11 @@ describe("clearOldReasoningPi", () => {
 				role: "assistant",
 				timestamp: 1,
 				content: [
-					{ type: "thinking", thinking: "old reasoning" },
+					{
+						type: "thinking",
+						thinking: "old reasoning",
+						thinkingSignature: "encrypted-thinking-signature",
+					},
 					{ type: "text", text: "old reply" },
 				],
 			},
@@ -113,12 +117,13 @@ describe("clearOldReasoningPi", () => {
 			clearReasoningAge: 1,
 			piMessageStableId,
 		});
-		expect(result.cleared).toBe(1);
+		expect(result.cleared).toBe(2);
 		expect(result.newWatermark).toBe(1);
 		expect(messages[0].content[0]).toMatchObject({
 			type: "thinking",
 			thinking: "[cleared]",
 		});
+		expect(messages[0].content[0]).not.toHaveProperty("thinkingSignature");
 		// Recent message untouched.
 		expect(messages[1].content[0]).toMatchObject({
 			type: "thinking",
@@ -160,7 +165,13 @@ describe("replayClearedReasoningPi", () => {
 			{
 				role: "assistant",
 				timestamp: 1,
-				content: [{ type: "thinking", thinking: "should be cleared" }],
+				content: [
+					{
+						type: "thinking",
+						thinking: "should be cleared",
+						thinkingSignature: "encrypted-thinking-signature",
+					},
+				],
 			},
 			{
 				role: "assistant",
@@ -179,8 +190,9 @@ describe("replayClearedReasoningPi", () => {
 			messageIdToMaxTag,
 			piMessageStableId,
 		});
-		expect(cleared).toBe(1);
+		expect(cleared).toBe(2);
 		expect(messages[0].content[0]).toMatchObject({ thinking: "[cleared]" });
+		expect(messages[0].content[0]).not.toHaveProperty("thinkingSignature");
 		expect(messages[1].content[0]).toMatchObject({ thinking: "still visible" });
 	});
 });
