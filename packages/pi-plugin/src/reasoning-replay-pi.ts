@@ -63,6 +63,22 @@ const INLINE_THINKING_PATTERNS = [
 
 const CLEARED = "[cleared]";
 
+function clearThinkingPart(part: PiThinkingContent): number {
+	let cleared = 0;
+	if (part.thinking !== CLEARED) {
+		part.thinking = CLEARED;
+		cleared++;
+	}
+	if (
+		typeof part.thinkingSignature === "string" &&
+		part.thinkingSignature.length > 0
+	) {
+		delete part.thinkingSignature;
+		cleared++;
+	}
+	return cleared;
+}
+
 function stripInlineThinkingMarkup(text: string): string {
 	let cleaned = text;
 	for (const pattern of INLINE_THINKING_PATTERNS) {
@@ -139,11 +155,7 @@ export function clearOldReasoningPi(args: {
 				typeof part === "object" &&
 				(part as { type?: unknown }).type === "thinking"
 			) {
-				const tp = part as PiThinkingContent;
-				if (tp.thinking !== CLEARED) {
-					tp.thinking = CLEARED;
-					cleared++;
-				}
+				cleared += clearThinkingPart(part as PiThinkingContent);
 			}
 		}
 
@@ -251,11 +263,7 @@ export function replayClearedReasoningPi(args: {
 				typeof part === "object" &&
 				(part as { type?: unknown }).type === "thinking"
 			) {
-				const tp = part as PiThinkingContent;
-				if (tp.thinking !== CLEARED) {
-					tp.thinking = CLEARED;
-					cleared++;
-				}
+				cleared += clearThinkingPart(part as PiThinkingContent);
 			}
 		}
 	}
