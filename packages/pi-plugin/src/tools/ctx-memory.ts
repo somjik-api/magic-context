@@ -77,7 +77,15 @@ import { CTX_MEMORY_DESCRIPTION } from "@magic-context/core/tools/ctx-memory/con
 import { runImmediateTransaction } from "@magic-context/core/tools/ctx-memory/verification-recording";
 import { type Static, Type } from "typebox";
 
-const DEFAULT_LIST_LIMIT = 10;
+// Default page size for `list`. Larger than the search default because
+// maintenance tasks page through the full memory set, but still bounded.
+const DEFAULT_LIST_LIMIT = 100;
+// Hard char budget for a single `list` page. A project can accumulate
+// thousands of active memories (hundreds of KB); returning them all in one
+// tool result overflows the dreamer model context and deadlocks the
+// consolidate/verify/archive tasks. The handler stops adding rows at this
+// budget and points the caller at the next page via `offset`.
+const LIST_PAGE_CHAR_BUDGET = 24000;
 
 // Mirrors OpenCode CTX_MEMORY_DREAMER_ACTIONS. `delete` was removed — it was an
 // exact alias of `archive` (both soft-archive); `archive` is the single
@@ -121,7 +129,12 @@ const ParamsSchema = Type.Object({
 	),
 	limit: Type.Optional(
 		Type.Number({
-			description: "Max results for list (default: 10)",
+			description: "Maximum results to return for list (default: 100)",
+		}),
+	),
+	offset: Type.Optional(
+		Type.Number({
+			description: "Zero-based offset for list pagination (default: 0)",
 		}),
 	),
 	reason: Type.Optional(
@@ -145,22 +158,50 @@ function err(text: string) {
 	};
 }
 
-function normalizeLimit(limit?: number): number {
-	if (typeof limit !== "number" || !Number.isFinite(limit))
-		return DEFAULT_LIST_LIMIT;
+function normalizeLimit(
+	limit?: number,
+	fallback: number = DEFAULT_LIST_LIMIT,
+): number {
+	if (typeof limit !== "number" || !Number.isFinite(limit)) return fallback;
 	return Math.max(1, Math.floor(limit));
 }
 
-function formatMemoryList(memories: Memory[]): string {
-	if (memories.length === 0) return "No active memories found.";
+function normalizeOffset(offset?: number): number {
+	if (typeof offset !== "number" || !Number.isFinite(offset)) return 0;
+	return Math.max(0, Math.floor(offset));
+}
 
-	const rows = memories.map((m) => ({
+interface MemoryPage {
+	pageMemories: Memory[];
+	totalCount: number;
+	offset: number;
+}
+
+function formatMemoryList(page: MemoryPage): string {
+	const { pageMemories, totalCount, offset } = page;
+	if (totalCount === 0) return "No active memories found.";
+	if (pageMemories.length === 0)
+		return `No memories at offset ${offset}. Total is ${totalCount}; use a smaller offset.`;
+
+	const allRows = pageMemories.map((m) => ({
 		id: String(m.id),
 		category: m.category,
 		status: m.status,
 		updated: new Date(m.updatedAt).toISOString(),
 		content: m.content.replace(/\s+/g, " ").trim(),
 	}));
+
+	// Hard char budget so a single page can never overflow the model context,
+	// regardless of how large `limit` is. Always include at least one row.
+	const rows: typeof allRows = [];
+	let usedChars = 0;
+	for (const r of allRows) {
+		const rowChars = r.content.length + 80;
+		if (rows.length > 0 && usedChars + rowChars > LIST_PAGE_CHAR_BUDGET) break;
+		rows.push(r);
+		usedChars += rowChars;
+	}
+
 	const widths = {
 		id: Math.max(2, ...rows.map((r) => r.id.length)),
 		category: Math.max(8, ...rows.map((r) => r.category.length)),
@@ -175,11 +216,22 @@ function formatMemoryList(memories: Memory[]): string {
 			r.updated.padEnd(widths.updated),
 			r.content,
 		].join(" | ");
+
+	const shownEnd = offset + rows.length;
+	const hasMore = shownEnd < totalCount;
+	const footer = hasMore
+		? `\n\n… ${totalCount - shownEnd} more. Fetch the next page with ctx_memory(action="list", offset=${shownEnd}${
+				pageMemories.length > rows.length ? "" : `, limit=${rows.length}`
+			}).`
+		: "";
+
 	return [
-		`Found ${rows.length} active ${rows.length === 1 ? "memory" : "memories"}:`,
+		`Showing memories ${offset + 1}-${shownEnd} of ${totalCount} total.`,
 		"",
 		...rows.map(fmt),
-	].join("\n");
+	]
+		.join("\n")
+		.concat(footer);
 }
 
 function isPrimaryMutableMemory(memory: Memory): boolean {
@@ -408,13 +460,21 @@ export function createCtxMemoryTool(
 			}
 
 			if (params.action === "list") {
-				const limit = normalizeLimit(params.limit);
+				const limit = normalizeLimit(params.limit, DEFAULT_LIST_LIMIT);
+				const offset = normalizeOffset(params.offset);
 				const filtered = getMemoriesByProject(deps.db, projectIdentity);
 				const category = params.category;
 				const filtered2 = category
 					? filtered.filter((m) => m.category === category)
 					: filtered;
-				return ok(formatMemoryList(filtered2.slice(0, limit)));
+				const pageMemories = filtered2.slice(offset, offset + limit);
+				return ok(
+					formatMemoryList({
+						pageMemories,
+						totalCount: filtered2.length,
+						offset,
+					}),
+				);
 			}
 
 			if (params.action === "update") {
