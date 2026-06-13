@@ -64,7 +64,7 @@ export function enqueueDream(
                 : 120 * 60 * 1000; // 2 hours — safe for scheduled long-running dreams
             db.prepare(
                 "DELETE FROM dream_queue WHERE project_path = ? AND started_at IS NOT NULL AND started_at < ?",
-            ).run([projectIdentity, now - staleThresholdMs]);
+            ).run(projectIdentity, now - staleThresholdMs);
         }
 
         const existing = db

@@ -187,6 +187,34 @@ describe("dreamer", () => {
             expect(rows?.count).toBe(1);
         });
 
+        it("force-enqueues over a stale started row when no lease is active (multi-bind stale DELETE)", () => {
+            db = createTestDb();
+            ensureDreamQueueTable(db);
+
+            // Seed a stale started row (claimed >2min ago) with NO active lease —
+            // this is the post-restart /ctx-dream path that runs the multi-param
+            // stale-cleanup DELETE inside enqueueDream. Regression guard: that
+            // DELETE must bind positionally (.run(a, b)), not as an array
+            // (.run([a, b])), or node:sqlite (Pi backend) throws
+            // "Unknown named parameter '0'".
+            expect(enqueueDream(db, "git:repo-1", "manual")).not.toBeNull();
+            db.prepare("UPDATE dream_queue SET started_at = ? WHERE project_path = ?").run(
+                Date.now() - 3 * 60 * 1000,
+                "git:repo-1",
+            );
+            expect(hasActiveDreamLease(db)).toBe(false);
+
+            // Must not throw, and must recover the stale row into a fresh entry.
+            const entry = enqueueDream(db, "git:repo-1", "manual", true);
+            expect(entry).not.toBeNull();
+            expect(entry?.startedAt).toBeNull();
+
+            const rows = db
+                .prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM dream_queue")
+                .get();
+            expect(rows?.count).toBe(1);
+        });
+
         it("aborts remaining dream work when the lease is lost between tasks", async () => {
             db = createTestDb();
             const client = createDreamClient();
