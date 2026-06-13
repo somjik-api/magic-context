@@ -20,6 +20,7 @@ export interface CtxMemoryArgs {
     id?: number;
     ids?: number[];
     limit?: number;
+    offset?: number;
     reason?: string;
 }
 

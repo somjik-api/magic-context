@@ -26,7 +26,13 @@ import {
     storedPathBelongsToIdentity,
 } from "../../features/magic-context/storage";
 import { sessionLog } from "../../shared/logger";
-import { CTX_MEMORY_DESCRIPTION, CTX_MEMORY_TOOL_NAME, DEFAULT_SEARCH_LIMIT } from "./constants";
+import {
+    CTX_MEMORY_DESCRIPTION,
+    CTX_MEMORY_TOOL_NAME,
+    DEFAULT_LIST_LIMIT,
+    DEFAULT_SEARCH_LIMIT,
+    LIST_PAGE_CHAR_BUDGET,
+} from "./constants";
 import {
     CTX_MEMORY_DREAMER_ACTIONS,
     type CtxMemoryAction,
@@ -40,12 +46,20 @@ function isMemoryCategory(value: string): value is MemoryCategory {
     return MEMORY_CATEGORIES.has(value);
 }
 
-function normalizeLimit(limit?: number): number {
+function normalizeLimit(limit?: number, fallback: number = DEFAULT_SEARCH_LIMIT): number {
     if (typeof limit !== "number" || !Number.isFinite(limit)) {
-        return DEFAULT_SEARCH_LIMIT;
+        return fallback;
     }
 
     return Math.max(1, Math.floor(limit));
+}
+
+function normalizeOffset(offset?: number): number {
+    if (typeof offset !== "number" || !Number.isFinite(offset)) {
+        return 0;
+    }
+
+    return Math.max(0, Math.floor(offset));
 }
 
 // Audit Finding #7 hardening: when a caller omits `allowedActions`, fall back
@@ -68,12 +82,28 @@ function normalizeCategory(category?: string): string | undefined {
     return trimmed ? trimmed : undefined;
 }
 
-function formatMemoryList(memories: Memory[]): string {
-    if (memories.length === 0) {
+interface MemoryPage {
+    /** Memories selected for this page (already offset-sliced by the caller). */
+    pageMemories: Memory[];
+    /** Total memories in the filtered set across all pages. */
+    totalCount: number;
+    /** Zero-based offset of the first row in `pageMemories`. */
+    offset: number;
+}
+
+function formatMemoryList(page: MemoryPage): string {
+    const { pageMemories, totalCount, offset } = page;
+    if (totalCount === 0) {
         return "No active memories found.";
     }
+    if (pageMemories.length === 0) {
+        return `No memories at offset ${offset}. Total is ${totalCount}; use a smaller offset.`;
+    }
 
-    const rows = memories.map((memory) => ({
+    // Apply a hard char budget so a single page can never overflow the model
+    // context, no matter how large `limit` is. Rows beyond the budget are
+    // dropped from THIS page and surfaced via the pagination footer.
+    const allRows = pageMemories.map((memory) => ({
         id: String(memory.id),
         category: memory.category,
         status: memory.status,
@@ -81,6 +111,21 @@ function formatMemoryList(memories: Memory[]): string {
         updated: new Date(memory.updatedAt).toISOString(),
         content: memory.content.replace(/\s+/g, " ").trim(),
     }));
+
+    const rows: typeof allRows = [];
+    let usedChars = 0;
+    for (const row of allRows) {
+        // ~6 columns of separators + content; approximate by content length +
+        // fixed overhead per row. Always include at least one row so a single
+        // oversized memory still returns (truncation handled below).
+        const rowChars = row.content.length + 80;
+        if (rows.length > 0 && usedChars + rowChars > LIST_PAGE_CHAR_BUDGET) {
+            break;
+        }
+        rows.push(row);
+        usedChars += rowChars;
+    }
+
     const headers = {
         id: "ID",
         category: "CATEGORY",
@@ -109,8 +154,17 @@ function formatMemoryList(memories: Memory[]): string {
             row.content,
         ].join(" | ");
 
+    const shownEnd = offset + rows.length;
+    const hasMore = shownEnd < totalCount;
+    const header = `Showing memories ${offset + 1}-${shownEnd} of ${totalCount} total.`;
+    const footer = hasMore
+        ? `\n\n… ${totalCount - shownEnd} more. Fetch the next page with ctx_memory(action="list", offset=${shownEnd}${
+              pageMemories.length > rows.length ? "" : `, limit=${rows.length}`
+          }).`
+        : "";
+
     return [
-        `Found ${rows.length} active ${rows.length === 1 ? "memory" : "memories"}:`,
+        header,
         "",
         formatRow(headers),
         [
@@ -122,7 +176,9 @@ function formatMemoryList(memories: Memory[]): string {
             "-------",
         ].join("-+-"),
         ...rows.map(formatRow),
-    ].join("\n");
+    ]
+        .join("\n")
+        .concat(footer);
 }
 
 function filterByCategory(memories: Memory[], category?: string): Memory[] {
@@ -250,7 +306,11 @@ function createCtxMemoryTool(deps: CtxMemoryToolDeps): ToolDefinition {
             limit: tool.schema
                 .number()
                 .optional()
-                .describe("Maximum results to return for list (default: 10)"),
+                .describe("Maximum results to return for list (default: 100)"),
+            offset: tool.schema
+                .number()
+                .optional()
+                .describe("Zero-based offset for list pagination (default: 0)"),
             reason: tool.schema
                 .string()
                 .optional()
@@ -348,14 +408,20 @@ function createCtxMemoryTool(deps: CtxMemoryToolDeps): ToolDefinition {
             }
 
             if (args.action === "list") {
-                const limit = normalizeLimit(args.limit);
+                const limit = normalizeLimit(args.limit, DEFAULT_LIST_LIMIT);
+                const offset = normalizeOffset(args.offset);
                 const category = normalizeCategory(args.category);
-                const memories = filterByCategory(
+                const filtered = filterByCategory(
                     getMemoriesByProject(deps.db, projectPath),
                     category,
-                ).slice(0, limit);
+                );
+                const pageMemories = filtered.slice(offset, offset + limit);
 
-                return formatMemoryList(memories);
+                return formatMemoryList({
+                    pageMemories,
+                    totalCount: filtered.length,
+                    offset,
+                });
             }
 
             if (args.action === "update") {

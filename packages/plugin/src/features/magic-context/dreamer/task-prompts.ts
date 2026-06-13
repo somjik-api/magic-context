@@ -52,7 +52,7 @@ Find semantically duplicate or overlapping memories and merge each cluster into 
 
 ### Process
 
-1. **List all active memories** with \`ctx_memory(action="list")\`.
+1. **List active memories page by page.** Start with \`ctx_memory(action="list")\`. The list is paginated — when the result ends with a "… N more. Fetch the next page with …" footer, call exactly that \`ctx_memory(action="list", offset=…)\` to continue until no footer remains. To keep each page small on a large project, prefer filtering by one category at a time: \`ctx_memory(action="list", category="CONSTRAINTS")\` and page through that category before moving to the next.
 2. **Group by category first**, then scan within each category for:
    - Near-identical wording (e.g. "Use SQLite for memory" vs "Use SQLite for persistent memory")
    - Same fact stated from different angles
@@ -87,7 +87,7 @@ Check verifiable memories against actual repository state. Update stale wording,
 
 ### Process
 
-1. **List all active memories** with \`ctx_memory(action="list")\`.
+1. **List active memories page by page.** Start with \`ctx_memory(action="list")\` and follow the pagination footer (\`ctx_memory(action="list", offset=…)\`) until no footer remains. On a large project, page through one category at a time via \`ctx_memory(action="list", category="…")\` so each page fits comfortably in context.
 2. **Categorize by verifiability:**
    - **CONFIG_VALUES**: grep schema/config files for actual values/defaults
    - **ARCHITECTURE**: check if referenced files, functions, modules still exist
@@ -169,7 +169,7 @@ ${userProfileBlock}
 
 ### Process
 
-1. **List all active memories** with \`ctx_memory(action="list")\`.
+1. **List active memories page by page.** Start with \`ctx_memory(action="list")\` and follow the pagination footer (\`ctx_memory(action="list", offset=…)\`) until no footer remains. On a large project, page through one category at a time via \`ctx_memory(action="list", category="…")\` so each page fits comfortably in context.
 2. **Apply the archive and keep criteria above to each memory.**
 3. **Verify each candidate** against the codebase before archiving:
    - Check if the file/tool/path actually exists
@@ -205,7 +205,7 @@ Rewrite verbose, narrative, or poorly-structured memories into terse operational
 
 ### Process
 
-1. **List all active memories** with \`ctx_memory(action="list")\`.
+1. **List active memories page by page.** Start with \`ctx_memory(action="list")\` and follow the pagination footer (\`ctx_memory(action="list", offset=…)\`) until no footer remains. On a large project, page through one category at a time via \`ctx_memory(action="list", category="…")\` so each page fits comfortably in context.
 2. **Identify improvement candidates:**
    - Narrative/historical wording: "We decided to..." → "X uses Y because Z"
    - Compound memories with multiple unrelated facts → split into separate memories
