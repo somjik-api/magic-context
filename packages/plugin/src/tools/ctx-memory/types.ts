@@ -25,6 +25,7 @@ export interface CtxMemoryArgs {
      */
     ids?: number[];
     limit?: number;
+    offset?: number;
     reason?: string;
 }
 
