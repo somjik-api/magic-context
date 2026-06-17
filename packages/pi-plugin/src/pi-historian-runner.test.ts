@@ -242,6 +242,30 @@ describe("runPiHistorian", () => {
 		}
 	});
 
+	it("charges protected-tail drain quota by the actual Pi chunk, not the whole eligible head", async () => {
+		const boundary = makeBoundarySnapshot({
+			trueRawEligibleTokens: 50_000,
+			N: 1_000,
+			usagePercentage: 96,
+		});
+		const { db, runner } = await runHistorianWith({
+			outputs: [successXml()],
+			boundarySnapshot: boundary,
+			providerMessages: rawMessages(6),
+		});
+		try {
+			expect(runner.run.mock.calls.length).toBeGreaterThan(0);
+			const charged = loadProtectedTailMeta(
+				db,
+				"ses-historian",
+			).protectedTailDrainTokens;
+			expect(charged).toBeGreaterThan(0);
+			expect(charged).toBeLessThan(4_000);
+		} finally {
+			closeQuietly(db);
+		}
+	});
+
 	it("skips when the protected-tail drain quota is exhausted", async () => {
 		const boundary = makeBoundarySnapshot();
 		const usable = Math.round(
