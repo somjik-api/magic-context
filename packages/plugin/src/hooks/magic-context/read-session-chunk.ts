@@ -326,11 +326,21 @@ function readRawSessionMessagesFromSource(sessionId: string): RawMessage[] {
     return withReadOnlySessionDb((db) => readRawSessionMessagesFromDb(db, sessionId));
 }
 
+function getAbsoluteRawMessageCount(messages: readonly RawMessage[]): number {
+    return messages.reduce((max, message) => Math.max(max, message.ordinal), 0);
+}
+
 export function getRawSessionMessageCount(sessionId: string): number {
     const provider = sessionProviders.get(sessionId);
     if (provider) {
         if (provider.getMessageCount) return provider.getMessageCount();
-        return provider.readMessages().length;
+        return getAbsoluteRawMessageCount(provider.readMessages());
+    }
+    if (activeRawMessageCache) {
+        const cached = activeRawMessageCache.get(sessionId);
+        if (cached) {
+            return activeAbsoluteCountCache?.get(sessionId) ?? getAbsoluteRawMessageCount(cached);
+        }
     }
     if (!openCodeDbExists()) return 0;
     return withReadOnlySessionDb((db) => getRawSessionMessageCountFromDb(db, sessionId));
