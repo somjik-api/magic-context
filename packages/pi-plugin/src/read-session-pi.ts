@@ -34,8 +34,8 @@
  *     prior tool_use parts.
  *   - When a tool-result run has no following user message (live tail
  *     ends with `assistant + tool_result`), we emit a synthetic user
- *     RawMessage with no stable id (id="" and ordinal still
- *     incremented). Formatting treats it as a normal user turn.
+ *     RawMessage whose id is derived from the first folded toolResult
+ *     entry. Formatting treats it as a normal user turn.
  *
  * # Ordinals
  *
@@ -53,20 +53,15 @@
  * needs to summarize. Future steps may surface compaction/branch
  * summary entries differently if needed.
  *
- * # Why not use Pi's compaction directly?
+ * # Pi native compaction boundary
  *
- * Pi has its own compaction primitive (CompactionEntry +
- * `pi.compact()`). Magic Context replaces it with historian-driven
- * compartments because:
- *   1. Compartments preserve a structured XML view of older turns
- *      (categorized facts, ranges, dates) that Pi's monolithic
- *      summary text can't.
- *   2. Cross-harness consistency: OpenCode users see the same
- *      `<session-history>` shape regardless of which harness ran the
- *      historian.
- *   3. Pi's compaction lives in the session JSONL file; magic-context
- *      compartments live in the shared cortexkit DB scoped by
- *      sessionId. Different storage, different lifecycle.
+ * Magic Context still owns semantic history through structured DB
+ * compartments, but Pi native compaction is the physical branch-trim
+ * primitive used to keep the provider-visible JSONL suffix small. Raw
+ * historian reads therefore start at the latest native compaction's
+ * `firstKeptEntryId` when one exists. This keeps MC ordinals aligned
+ * with the active provider-visible suffix instead of reprocessing a
+ * root-relative prefix that Pi has already physically summarized.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -88,6 +83,48 @@ import type { RawMessage } from "@magic-context/core/hooks/magic-context/read-se
  * `synth-user-` literal.
  */
 export const SYNTH_USER_ID_PREFIX = "synth-user-";
+
+function getBranchEntryId(entry: unknown): string | null {
+	if (entry === null || typeof entry !== "object") return null;
+	const id = (entry as { id?: unknown }).id;
+	return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+export function findLatestCompactionFirstKeptEntryId(
+	entries: readonly unknown[],
+): string | null {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry === null || typeof entry !== "object") continue;
+		const record = entry as { type?: unknown; firstKeptEntryId?: unknown };
+		if (
+			record.type === "compaction" &&
+			typeof record.firstKeptEntryId === "string" &&
+			record.firstKeptEntryId.length > 0
+		) {
+			return record.firstKeptEntryId;
+		}
+	}
+	return null;
+}
+
+export function sliceEntriesFromLatestCompaction(
+	entries: readonly unknown[],
+): unknown[] {
+	const firstKeptEntryId = findLatestCompactionFirstKeptEntryId(entries);
+	if (firstKeptEntryId === null) return [...entries];
+	const firstKeptIndex = entries.findIndex(
+		(entry) => getBranchEntryId(entry) === firstKeptEntryId,
+	);
+	if (firstKeptIndex < 0) return [...entries];
+	return [...entries.slice(firstKeptIndex)];
+}
+
+export function convertActiveEntriesToRawMessages(
+	entries: readonly unknown[],
+): RawMessage[] {
+	return convertEntriesToRawMessages(sliceEntriesFromLatestCompaction(entries));
+}
 
 /**
  * The single source of truth for a Pi message's durable stable id.
@@ -223,7 +260,7 @@ export function readPiSessionMessages(ctx: ExtensionContext): RawMessage[] {
 	}
 	if (!Array.isArray(entries)) return [];
 
-	return convertEntriesToRawMessages(entries);
+	return convertActiveEntriesToRawMessages(entries);
 }
 
 /**
