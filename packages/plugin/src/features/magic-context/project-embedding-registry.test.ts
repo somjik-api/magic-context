@@ -244,6 +244,32 @@ describe("project embedding registry", () => {
         expect(calls).toContain("COMMIT");
     });
 
+    it("supports snapshot-only registration without running storage maintenance", async () => {
+        _setTestProviderFactoryForProject(
+            (config) =>
+                new FakeEmbeddingProvider(config.provider === "local" ? config.model : "off"),
+        );
+        const schemaLessDb = new Database(":memory:");
+        try {
+            const snapshot = registerProjectEmbedding(
+                schemaLessDb,
+                "git:subagent",
+                localConfig("model-subagent"),
+                { memoryEnabled: true, gitCommitEnabled: true },
+                "/tmp/subagent",
+                { maintenance: false },
+            );
+            const vector = await embedTextForProject("git:subagent", "hello");
+
+            expect(snapshot.projectIdentity).toBe("git:subagent");
+            expect(snapshot.enabled).toBe(true);
+            expect(snapshot.gitCommitEnabled).toBe(true);
+            expect(vector?.vector[1]).toBe("model-subagent".length);
+        } finally {
+            schemaLessDb.close();
+        }
+    });
+
     it("drainCommitBacklogForProject embeds pre-indexed commits with no new git log work", async () => {
         _setTestProviderFactoryForProject(
             (config) =>
