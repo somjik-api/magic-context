@@ -45,6 +45,7 @@ export function getSchemaFenceRejection(): {
 }
 
 export const LATEST_SUPPORTED_VERSION = 50;
+export const SQLITE_BUSY_TIMEOUT_MS = 30_000;
 
 // chmod is meaningless on Windows (POSIX modes are not honored), so all
 // permission tightening is skipped there. mkdir's `mode` is likewise ignored.
@@ -91,6 +92,7 @@ function restrictDatabaseFilePermissions(dbPath: string): void {
         }
     }
 }
+
 
 export interface OpenDatabaseOptions {
     dbPath?: string;
@@ -355,7 +357,7 @@ export function initializeDatabase(db: Database): void {
     // processes can cold-open the same DB at once (real OpenCode/Pi startup, or
     // the subprocess lease tests); without the timeout this connection can throw
     // SQLITE_BUSY immediately while the sibling is switching journal mode.
-    db.exec("PRAGMA busy_timeout=5000");
+    db.exec(`PRAGMA busy_timeout=${SQLITE_BUSY_TIMEOUT_MS}`);
     // SQLite per-connection PRAGMAs. foreign_keys MUST run before any reads
     // or writes: it defaults to OFF, which silently breaks every ON DELETE
     // CASCADE / SET NULL declared in the schema below and in migrations.

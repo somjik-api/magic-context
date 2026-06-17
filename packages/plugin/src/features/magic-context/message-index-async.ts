@@ -18,7 +18,7 @@ import {
  * re-reads `last_indexed_ordinal` and indexes everything missed). A
  * single SQLITE_BUSY here just means another writer (concurrent
  * transform on a different session, dreamer task, second OpenCode
- * instance) held the WAL writer lock past our 5s `busy_timeout`.
+ * instance) held the WAL writer lock past our SQLite `busy_timeout`.
  * Throwing turns a normal busy-window into a stack trace in user logs
  * without changing the eventual indexing outcome — reconciliation fills
  * in any missed rows automatically the next time

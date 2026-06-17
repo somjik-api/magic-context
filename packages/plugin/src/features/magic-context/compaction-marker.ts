@@ -33,6 +33,7 @@ import { getDataDir } from "../../shared/data-path";
 import { log } from "../../shared/logger";
 import { Database } from "../../shared/sqlite";
 import { closeQuietly } from "../../shared/sqlite-helpers";
+import { SQLITE_BUSY_TIMEOUT_MS } from "./storage-db";
 
 // ── ID Generation ────────────────────────────────────────────────
 
@@ -170,10 +171,10 @@ function getWritableOpenCodeDb(): Database {
     }
     const db = new Database(dbPath);
     // busy_timeout BEFORE journal_mode=WAL: setting WAL can need the file lock, so
-    // with the timeout installed first a cold-open while OpenCode holds the lock
-    // waits up to 5s instead of throwing SQLITE_BUSY immediately.
-    db.exec("PRAGMA busy_timeout=5000");
+    // a sibling cold-open should wait instead of failing immediately.
+    db.exec(`PRAGMA busy_timeout=${SQLITE_BUSY_TIMEOUT_MS}`);
     db.exec("PRAGMA journal_mode=WAL");
+
     cachedWriteDb = { path: dbPath, db };
     return db;
 }

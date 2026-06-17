@@ -131,7 +131,7 @@ describe("magic-context storage", () => {
             .all() as Array<{ name: string }>;
         //#then
         expect(wal.journal_mode.toLowerCase()).toBe("wal");
-        expect(Object.values(timeout)[0]).toBe(5000);
+        expect(Object.values(timeout)[0]).toBe(30_000);
         expect(existsSync(resolveDbPath(dataHome))).toBe(true);
         expect(tables.map((t) => t.name)).toEqual(
             expect.arrayContaining([
