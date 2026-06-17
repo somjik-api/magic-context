@@ -67,3 +67,4 @@ packages/plugin/scripts/test-historian-prompt.ts
 
 # Local scratch directories — checkouts dropped here for one-off lookups
 .tmp-*/
+.cms/
