@@ -3,9 +3,11 @@
 import { describe, expect, it } from "bun:test";
 import { findFirstKeptEntryId } from "./pi-historian-runner";
 import {
+	convertActiveEntriesToRawMessages,
 	convertEntriesToRawMessages,
 	findLastModelKeyFromBranch,
 	isMidTurnPi,
+	sliceEntriesFromLatestCompaction,
 } from "./read-session-pi";
 
 describe("isMidTurnPi", () => {
@@ -348,6 +350,58 @@ describe("convertEntriesToRawMessages: synthetic-user entry-id propagation", () 
 	});
 });
 
+describe("Pi native compaction-aware raw history", () => {
+	function messageEntry(
+		id: string,
+		message: Record<string, unknown>,
+	): Record<string, unknown> {
+		return { type: "message", id, message };
+	}
+
+	it("slices raw historian input from the latest native compaction firstKept entry", () => {
+		const entries = [
+			messageEntry("old-u", { role: "user", content: "old" }),
+			messageEntry("old-a", { role: "assistant", content: [] }),
+			messageEntry("live-u", { role: "user", content: "live" }),
+			messageEntry("live-a", { role: "assistant", content: [] }),
+			{ type: "compaction", firstKeptEntryId: "live-u" },
+			messageEntry("live-u2", { role: "user", content: "new" }),
+		];
+
+		expect(
+			sliceEntriesFromLatestCompaction(entries).map(
+				(entry) =>
+					(entry as { id?: string; type?: string }).id ??
+					(entry as { type?: string }).type,
+			),
+		).toEqual(["live-u", "live-a", "compaction", "live-u2"]);
+		expect(
+			convertActiveEntriesToRawMessages(entries).map((m) => ({
+				ordinal: m.ordinal,
+				id: m.id,
+				role: m.role,
+			})),
+		).toEqual([
+			{ ordinal: 1, id: "live-u", role: "user" },
+			{ ordinal: 2, id: "live-a", role: "assistant" },
+			{ ordinal: 3, id: "live-u2", role: "user" },
+		]);
+	});
+
+	it("leaves the branch unchanged when the latest native compaction target is missing", () => {
+		const entries = [
+			messageEntry("old-u", { role: "user", content: "old" }),
+			{ type: "compaction", firstKeptEntryId: "missing" },
+			messageEntry("live-u", { role: "user", content: "live" }),
+		];
+
+		expect(sliceEntriesFromLatestCompaction(entries)).toEqual(entries);
+		expect(convertActiveEntriesToRawMessages(entries).map((m) => m.id)).toEqual(
+			["old-u", "live-u"],
+		);
+	});
+});
+
 describe("findFirstKeptEntryId — replay-safe boundary resolution", () => {
 	function messageEntry(
 		id: string,
@@ -380,6 +434,20 @@ describe("findFirstKeptEntryId — replay-safe boundary resolution", () => {
 	it("returns a real entry id when the boundary lands on a normal message", () => {
 		// boundary after ordinal 1 (u-0) → kept start is ordinal 2 (asst-1).
 		expect(findFirstKeptEntryId(entries, 1)).toBe("asst-1");
+	});
+
+	it("resolves kept-start ordinals in the active native-compaction suffix", () => {
+		const compactedEntries = [
+			messageEntry("old-u", { role: "user", content: "old" }),
+			messageEntry("old-a", { role: "assistant", content: [] }),
+			messageEntry("live-u", { role: "user", content: "live" }),
+			messageEntry("live-a", { role: "assistant", content: [] }),
+			{ type: "compaction", firstKeptEntryId: "live-u" },
+		];
+
+		// In the active suffix, ordinal 1 is live-u and ordinal 2 is live-a.
+		// Pre-fix this incorrectly returned old-a from the root-relative space.
+		expect(findFirstKeptEntryId(compactedEntries, 1)).toBe("live-a");
 	});
 
 	it("DEFERS (null) when the kept-start ordinal is a folded-toolResult synthetic user", () => {
