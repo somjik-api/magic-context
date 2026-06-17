@@ -90,40 +90,83 @@ function getBranchEntryId(entry: unknown): string | null {
 	return typeof id === "string" && id.length > 0 ? id : null;
 }
 
-export function findLatestCompactionFirstKeptEntryId(
+interface LatestCompactionBoundary {
+	firstKeptEntryId: string;
+	lastCompactedOrdinal: number | null;
+}
+
+function getLatestCompactionBoundary(
 	entries: readonly unknown[],
-): string | null {
+): LatestCompactionBoundary | null {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 		if (entry === null || typeof entry !== "object") continue;
-		const record = entry as { type?: unknown; firstKeptEntryId?: unknown };
+		const record = entry as {
+			type?: unknown;
+			firstKeptEntryId?: unknown;
+			details?: unknown;
+		};
 		if (
-			record.type === "compaction" &&
-			typeof record.firstKeptEntryId === "string" &&
-			record.firstKeptEntryId.length > 0
+			record.type !== "compaction" ||
+			typeof record.firstKeptEntryId !== "string" ||
+			record.firstKeptEntryId.length === 0
 		) {
-			return record.firstKeptEntryId;
+			continue;
 		}
+		const details = record.details as { lastCompactedOrdinal?: unknown } | null;
+		const lastCompactedOrdinal =
+			details !== null &&
+			typeof details === "object" &&
+			typeof details.lastCompactedOrdinal === "number" &&
+			Number.isFinite(details.lastCompactedOrdinal)
+				? details.lastCompactedOrdinal
+				: null;
+		return { firstKeptEntryId: record.firstKeptEntryId, lastCompactedOrdinal };
 	}
 	return null;
+}
+
+export function findLatestCompactionFirstKeptEntryId(
+	entries: readonly unknown[],
+): string | null {
+	return getLatestCompactionBoundary(entries)?.firstKeptEntryId ?? null;
+}
+
+function sliceEntriesFromLatestCompactionWithOrdinalBase(
+	entries: readonly unknown[],
+): { entries: unknown[]; firstOrdinal: number } {
+	const boundary = getLatestCompactionBoundary(entries);
+	if (boundary === null) return { entries: [...entries], firstOrdinal: 1 };
+	const firstKeptIndex = entries.findIndex(
+		(entry) => getBranchEntryId(entry) === boundary.firstKeptEntryId,
+	);
+	if (firstKeptIndex < 0) return { entries: [...entries], firstOrdinal: 1 };
+	return {
+		entries: [...entries.slice(firstKeptIndex)],
+		firstOrdinal:
+			boundary.lastCompactedOrdinal === null
+				? 1
+				: boundary.lastCompactedOrdinal + 1,
+	};
 }
 
 export function sliceEntriesFromLatestCompaction(
 	entries: readonly unknown[],
 ): unknown[] {
-	const firstKeptEntryId = findLatestCompactionFirstKeptEntryId(entries);
-	if (firstKeptEntryId === null) return [...entries];
-	const firstKeptIndex = entries.findIndex(
-		(entry) => getBranchEntryId(entry) === firstKeptEntryId,
-	);
-	if (firstKeptIndex < 0) return [...entries];
-	return [...entries.slice(firstKeptIndex)];
+	return sliceEntriesFromLatestCompactionWithOrdinalBase(entries).entries;
 }
 
 export function convertActiveEntriesToRawMessages(
 	entries: readonly unknown[],
 ): RawMessage[] {
-	return convertEntriesToRawMessages(sliceEntriesFromLatestCompaction(entries));
+	const active = sliceEntriesFromLatestCompactionWithOrdinalBase(entries);
+	const messages = convertEntriesToRawMessages(active.entries);
+	if (active.firstOrdinal === 1) return messages;
+	const ordinalOffset = active.firstOrdinal - 1;
+	return messages.map((message) => ({
+		...message,
+		ordinal: message.ordinal + ordinalOffset,
+	}));
 }
 
 /**
