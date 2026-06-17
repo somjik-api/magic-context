@@ -67,7 +67,6 @@ packages/plugin/scripts/test-historian-prompt.ts
 
 # Local scratch directories — checkouts dropped here for one-off lookups
 .tmp-*/
-
 # Dogfooding: Magic Context runs on its own repo and writes runtime
 # artifacts (historian dumps) + a fenced .gitignore under .cortexkit/.
 # This is local runtime state, never source.
@@ -76,3 +75,5 @@ packages/plugin/scripts/test-historian-prompt.ts
 # Internal SUBC-migration design docs / specs (not public)
 docs/cache-policy/
 docs/specs/
+
+.cms/
