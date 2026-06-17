@@ -108,7 +108,7 @@ import type {
 } from "@magic-context/core/shared/subagent-runner";
 import { ensureProjectRegisteredFromPiDirectory } from "./embedding-bootstrap";
 import {
-	convertEntriesToRawMessages,
+	convertActiveEntriesToRawMessages,
 	SYNTH_USER_ID_PREFIX,
 } from "./read-session-pi";
 
@@ -1298,7 +1298,7 @@ export function findFirstKeptEntryId(
 	entries: unknown[],
 	lastCompactedOrdinal: number,
 ): string | null {
-	const rawMessages = convertEntriesToRawMessages(entries);
+	const rawMessages = convertActiveEntriesToRawMessages(entries);
 	const target = lastCompactedOrdinal + 1;
 	const boundary = rawMessages.find((m) => m.ordinal === target);
 	if (!boundary) return null;
