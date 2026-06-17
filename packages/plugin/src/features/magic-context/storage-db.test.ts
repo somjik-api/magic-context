@@ -66,7 +66,7 @@ describe("storage-db", () => {
             const wal = db.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
             const timeout = db.prepare("PRAGMA busy_timeout").get() as Record<string, number>;
             expect(wal.journal_mode.toLowerCase()).toBe("wal");
-            expect(Object.values(timeout)[0]).toBe(5000);
+            expect(Object.values(timeout)[0]).toBe(30_000);
             expect(existsSync(resolveDbPath(dataHome))).toBe(true);
             expect(isDatabasePersisted(db)).toBe(true);
         });

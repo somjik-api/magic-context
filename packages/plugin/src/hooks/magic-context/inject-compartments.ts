@@ -332,7 +332,7 @@ export function prepareCompartmentInjection(
             // Snapshot so subsequent turns reuse the same block without cache bust.
             // Swallow SQLITE_BUSY: the cache is a pure optimization (the block itself
             // is already computed and returned below). If another writer holds the DB
-            // past busy_timeout=5s — typically a concurrent dreamer/historian child
+            // past SQLite busy_timeout — typically a concurrent dreamer/historian child
             // session or a second OpenCode process — we'd rather let the transform
             // proceed with a one-turn cache miss than crash the user's prompt.
             // Issue: https://github.com/cortexkit/magic-context/issues/23
