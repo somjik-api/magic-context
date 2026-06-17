@@ -322,26 +322,8 @@ export async function runCompartmentAgent(deps: CompartmentRunnerDeps): Promise<
                 (boundarySnapshot.contextLimit * boundarySnapshot.executeThresholdPercentage) / 100,
             ),
         );
-        const reserve = reserveProtectedTailDrainTokens({
-            db,
-            sessionId,
-            runId: crypto.randomUUID(),
-            trueRawTokens: boundarySnapshot.trueRawEligibleTokens,
-            usagePercentage: boundarySnapshot.usagePercentage,
-            usable,
-            perRunCap,
-            executeThresholdPercentage: boundarySnapshot.executeThresholdPercentage,
-        });
-        if (!reserve.ok) {
-            sessionLog(
-                sessionId,
-                `historian rate-limit skip: ${reserve.skippedReason ?? "quota exhausted"}`,
-            );
-            telemetry.status = "noop";
-            telemetry.failureReason = "protected-tail drain quota exhausted";
-            return;
-        }
-        drainReservation = reserve.reservation;
+
+
 
         const chunk = readSessionChunk(sessionId, historianChunkTokens, offset, eligibleEndOrdinal);
         telemetry.chunkStartOrdinal = chunk.startIndex;
@@ -371,6 +353,27 @@ export async function runCompartmentAgent(deps: CompartmentRunnerDeps): Promise<
                 `historian pre-flight: truncated formatted input for ${chunk.startIndex}-${chunk.endIndex} to fit ${historianChunkTokens} tokens`,
             );
         }
+
+        const reserve = reserveProtectedTailDrainTokens({
+            db,
+            sessionId,
+            runId: crypto.randomUUID(),
+            trueRawTokens: chunk.tokenEstimate,
+            usagePercentage: boundarySnapshot.usagePercentage,
+            usable,
+            perRunCap,
+            executeThresholdPercentage: boundarySnapshot.executeThresholdPercentage,
+        });
+        if (!reserve.ok) {
+            sessionLog(
+                sessionId,
+                `historian rate-limit skip: ${reserve.skippedReason ?? "quota exhausted"}`,
+            );
+            telemetry.status = "noop";
+            telemetry.failureReason = "protected-tail drain quota exhausted";
+            return;
+        }
+        drainReservation = reserve.reservation;
 
         const chunkCoverageError = validateChunkCoverage(chunk);
         if (chunkCoverageError) {
