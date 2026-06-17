@@ -50,7 +50,7 @@ import { openDatabase } from "@magic-context/core/features/magic-context/storage
 import { setHarness } from "@magic-context/core/shared/harness";
 import { log } from "@magic-context/core/shared/logger";
 import { loadPiConfig } from "./config";
-import { ensureProjectRegisteredFromPiDirectory } from "./embedding-bootstrap";
+import { ensureProjectEmbeddingSnapshotFromPiDirectory } from "./embedding-bootstrap";
 import { registerMagicContextTools } from "./tools";
 
 const SUBAGENT_DREAMER_ACTIONS_FLAG = "magic-context-dreamer-actions";
@@ -88,13 +88,13 @@ export default function magicContextSubagentExtension(pi: ExtensionAPI): void {
 			// parent-only concerns).
 			const directory = process.cwd();
 			const { config: cfg } = loadPiConfig({ cwd: directory });
-			await ensureProjectRegisteredFromPiDirectory(directory, db);
+			await ensureProjectEmbeddingSnapshotFromPiDirectory(directory, db);
 			const dreamerActionsEnabled =
 				pi.getFlag(SUBAGENT_DREAMER_ACTIONS_FLAG) === true;
 
 			registerMagicContextTools(pi, {
 				db,
-				ensureProjectRegistered: ensureProjectRegisteredFromPiDirectory,
+				ensureProjectRegistered: ensureProjectEmbeddingSnapshotFromPiDirectory,
 				// Sidekick is retrieval-only and consumes untrusted /ctx-aug prompt text,
 				// so only dreamer subagents register ctx_memory in child processes.
 				memoryToolEnabled: dreamerActionsEnabled,

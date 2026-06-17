@@ -12,6 +12,7 @@ import { saveEmbedding } from "./storage-memory-embeddings";
 
 export type {
     EmbeddingFeatures,
+    ProjectEmbeddingRegistrationOptions,
     ProjectEmbeddingRegistrationSnapshot,
 } from "../project-embedding-registry";
 export {

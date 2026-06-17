@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { EmbeddingConfig } from "../../config/schema/magic-context";
+import { Database } from "../../shared/sqlite";
 import {
     chunkCanonicalText,
     loadCompartmentChunkEmbeddingsForSearch,
@@ -141,6 +142,32 @@ describe("project embedding registry", () => {
             }
         }
         tempDirs.length = 0;
+    });
+
+    it("supports snapshot-only registration without running storage maintenance", async () => {
+        _setTestProviderFactoryForProject(
+            (config) =>
+                new FakeEmbeddingProvider(config.provider === "local" ? config.model : "off"),
+        );
+        const schemaLessDb = new Database(":memory:");
+        try {
+            const snapshot = registerProjectEmbeddingAndMaybeWipe(
+                schemaLessDb,
+                "git:subagent",
+                localConfig("model-subagent"),
+                { memoryEnabled: true, gitCommitEnabled: true },
+                "/tmp/subagent",
+                { maintenance: false },
+            );
+            const vector = await embedTextForProject("git:subagent", "hello");
+
+            expect(snapshot.projectIdentity).toBe("git:subagent");
+            expect(snapshot.enabled).toBe(true);
+            expect(snapshot.gitCommitEnabled).toBe(true);
+            expect(vector?.vector[1]).toBe("model-subagent".length);
+        } finally {
+            schemaLessDb.close();
+        }
     });
 
     it("keeps independent snapshots and providers for two projects in one process", async () => {

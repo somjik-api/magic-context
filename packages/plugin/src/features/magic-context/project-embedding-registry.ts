@@ -100,6 +100,17 @@ export interface EmbeddingFeatures {
     gitCommitEnabled: boolean;
 }
 
+export interface ProjectEmbeddingRegistrationOptions {
+    /**
+     * When true (default), registration owns startup maintenance: stale-vector
+     * wipes and historical chunk-project repair writes. Short-lived subagent
+     * processes should set this false: they need a process-local embedding
+     * snapshot/provider for ctx_search, but must not contend on global repair
+     * writers during parallel startup.
+     */
+    maintenance?: boolean;
+}
+
 export interface ProjectEmbeddingRegistrationSnapshot {
     projectIdentity: string;
     sourceDirectory: string;
@@ -357,6 +368,7 @@ export function registerProjectEmbeddingAndMaybeWipe(
     config: EmbeddingConfig,
     features: EmbeddingFeatures,
     sourceDirectory: string,
+    options: ProjectEmbeddingRegistrationOptions = {},
 ): ProjectEmbeddingRegistrationSnapshot {
     const resolvedConfig = resolveEmbeddingConfig(config);
     const providerIdentity = getEmbeddingProviderIdentity(resolvedConfig);
@@ -368,13 +380,16 @@ export function registerProjectEmbeddingAndMaybeWipe(
         !prior.observationMode &&
         prior.runtimeFingerprint === runtimeFingerprint &&
         prior.providerIdentity === providerIdentity;
-    const wiped = maybeWipeStaleEmbeddings(
-        db,
-        projectIdentity,
-        providerIdentity,
-        chunkModelId,
-        features,
-    );
+    const wiped =
+        options.maintenance === false
+            ? false
+            : maybeWipeStaleEmbeddings(
+                  db,
+                  projectIdentity,
+                  providerIdentity,
+                  chunkModelId,
+                  features,
+              );
     const generationChanged =
         prior === undefined ||
         prior.observationMode ||
