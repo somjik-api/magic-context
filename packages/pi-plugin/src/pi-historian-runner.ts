@@ -389,25 +389,6 @@ export async function runPiHistorian(deps: PiHistorianDeps): Promise<void> {
 						100,
 				),
 			);
-			const reserve = reserveProtectedTailDrainTokens({
-				db,
-				sessionId,
-				runId: crypto.randomUUID(),
-				trueRawTokens: boundarySnapshot.trueRawEligibleTokens,
-				usagePercentage: boundarySnapshot.usagePercentage,
-				usable,
-				perRunCap,
-			});
-			if (!reserve.ok) {
-				sessionLog(
-					sessionId,
-					`historian rate-limit skip: ${reserve.skippedReason ?? "quota exhausted"}`,
-				);
-				telemetry.status = "noop";
-				telemetry.failureReason = "protected-tail drain quota exhausted";
-				return;
-			}
-			drainReservation = reserve.reservation;
 
 			const chunk = readSessionChunk(
 				sessionId,
@@ -430,6 +411,26 @@ export async function runPiHistorian(deps: PiHistorianDeps): Promise<void> {
 				rollbackDrainReservation();
 				return;
 			}
+
+			const reserve = reserveProtectedTailDrainTokens({
+				db,
+				sessionId,
+				runId: crypto.randomUUID(),
+				trueRawTokens: chunk.tokenEstimate,
+				usagePercentage: boundarySnapshot.usagePercentage,
+				usable,
+				perRunCap,
+			});
+			if (!reserve.ok) {
+				sessionLog(
+					sessionId,
+					`historian rate-limit skip: ${reserve.skippedReason ?? "quota exhausted"}`,
+				);
+				telemetry.status = "noop";
+				telemetry.failureReason = "protected-tail drain quota exhausted";
+				return;
+			}
+			drainReservation = reserve.reservation;
 
 			const chunkCoverageError = validateChunkCoverage(chunk);
 			if (chunkCoverageError) {
