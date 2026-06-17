@@ -32,6 +32,7 @@ import { getDataDir } from "../../shared/data-path";
 import { log } from "../../shared/logger";
 import { Database } from "../../shared/sqlite";
 import { closeQuietly } from "../../shared/sqlite-helpers";
+import { SQLITE_BUSY_TIMEOUT_MS } from "./storage-db";
 
 // ── ID Generation ────────────────────────────────────────────────
 
@@ -159,8 +160,8 @@ function getWritableOpenCodeDb(): Database {
     }
     const db = new Database(dbPath);
     db.exec("PRAGMA journal_mode=WAL");
-    // Allow up to 5s wait when OpenCode holds a write lock
-    db.exec("PRAGMA busy_timeout=5000");
+    // Allow a bounded wait when OpenCode holds a write lock.
+    db.exec(`PRAGMA busy_timeout=${SQLITE_BUSY_TIMEOUT_MS}`);
     cachedWriteDb = { path: dbPath, db };
     return db;
 }

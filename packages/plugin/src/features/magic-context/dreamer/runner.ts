@@ -13,6 +13,7 @@ import { Database } from "../../../shared/sqlite";
 import { closeQuietly } from "../../../shared/sqlite-helpers";
 import { runKeyFilesTask } from "../key-files/identify-key-files";
 import { getMemoryCountsByStatus } from "../memory/storage-memory";
+import { SQLITE_BUSY_TIMEOUT_MS } from "../storage-db";
 import { getPendingSmartNotes, markNoteChecked, markNoteReady } from "../storage-notes";
 import { recordChildInvocation } from "../subagent-token-capture";
 import { reviewUserMemories } from "../user-memory/review-user-memories";
@@ -129,7 +130,7 @@ function openOpenCodeDb(): Database | null {
 
     try {
         const db = new Database(dbPath, { readonly: true });
-        db.exec("PRAGMA busy_timeout = 5000");
+        db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
         return db;
     } catch (error) {
         log(`[key-files] failed to open OpenCode DB at ${dbPath}: ${getErrorMessage(error)}`);
