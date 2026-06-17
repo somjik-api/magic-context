@@ -12,6 +12,7 @@ import { deriveTriggerBudget } from "./derive-budgets";
 import {
     getCachedAbsoluteMessageCount,
     getLegacyProtectedTailStartOrdinal,
+    getRawSessionMessageCount,
     readRawSessionMessages,
 } from "./read-session-chunk";
 import { hasMeaningfulUserText } from "./read-session-formatting";
@@ -648,7 +649,7 @@ export function getRawHistoryEligibility(db: Database, sessionId: string): RawHi
     // tail slice (whole-session array or Pi provider) this is null and we use the
     // array length exactly as before.
     const absoluteCount = getCachedAbsoluteMessageCount(sessionId);
-    const rawMessageCount = absoluteCount ?? readRawSessionMessages(sessionId).length;
+    const rawMessageCount = absoluteCount ?? getRawSessionMessageCount(sessionId);
     return {
         lastCompartmentEnd,
         offset,
