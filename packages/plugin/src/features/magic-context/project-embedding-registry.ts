@@ -99,6 +99,17 @@ export interface EmbeddingFeatures {
     gitCommitEnabled: boolean;
 }
 
+export interface ProjectEmbeddingRegistrationOptions {
+    /**
+     * When true (default), registration owns startup maintenance: stale-vector
+     * wipes and historical chunk-project repair writes. Short-lived subagent
+     * processes should set this false: they need a process-local embedding
+     * snapshot/provider for ctx_search, but must not contend on global repair
+     * writers during parallel startup.
+     */
+    maintenance?: boolean;
+}
+
 export interface ProjectEmbeddingRegistrationSnapshot {
     projectIdentity: string;
     sourceDirectory: string;
@@ -599,6 +610,7 @@ export function registerProjectEmbedding(
     config: EmbeddingConfig,
     features: EmbeddingFeatures,
     sourceDirectory: string,
+    options: ProjectEmbeddingRegistrationOptions = {},
 ): ProjectEmbeddingRegistrationSnapshot {
     const resolvedConfig = resolveEmbeddingConfig(config);
     const providerIdentity = getEmbeddingProviderIdentity(resolvedConfig);
@@ -610,10 +622,14 @@ export function registerProjectEmbedding(
         !prior.observationMode &&
         prior.runtimeFingerprint === runtimeFingerprint &&
         prior.providerIdentity === providerIdentity;
-    recordActiveEmbeddingIdentity(db, projectIdentity, providerIdentity, chunkModelId, features);
-    // A trusted registration just landed — clear any prior untrusted-load latch
-    // so GC can resume for this project.
-    untrustedLoadProjects.delete(projectIdentity);
+    if (options.maintenance !== false) {
+        recordActiveEmbeddingIdentity(db, projectIdentity, providerIdentity, chunkModelId, features);
+        // A trusted registration just landed — clear any prior untrusted-load latch
+        // so GC can resume for this project. Snapshot-only subagent registration
+        // is process-local and deliberately does not mutate maintenance state.
+        untrustedLoadProjects.delete(projectIdentity);
+    }
+
     const generationChanged =
         prior === undefined ||
         prior.observationMode ||
