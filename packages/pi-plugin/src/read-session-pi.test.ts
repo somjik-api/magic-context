@@ -343,6 +343,33 @@ describe("Pi native compaction-aware raw history", () => {
 		]);
 	});
 
+	it("preserves Magic Context ordinals after a native compaction marker", () => {
+		const entries = [
+			messageEntry("old-u", { role: "user", content: "old" }),
+			messageEntry("old-a", { role: "assistant", content: [] }),
+			messageEntry("live-u", { role: "user", content: "live" }),
+			messageEntry("live-a", { role: "assistant", content: [] }),
+			{
+				type: "compaction",
+				firstKeptEntryId: "live-u",
+				details: { source: "magic-context", lastCompactedOrdinal: 1855 },
+			},
+			messageEntry("live-u2", { role: "user", content: "new" }),
+		];
+
+		expect(
+			convertActiveEntriesToRawMessages(entries).map((m) => ({
+				ordinal: m.ordinal,
+				id: m.id,
+				role: m.role,
+			})),
+		).toEqual([
+			{ ordinal: 1856, id: "live-u", role: "user" },
+			{ ordinal: 1857, id: "live-a", role: "assistant" },
+			{ ordinal: 1858, id: "live-u2", role: "user" },
+		]);
+	});
+
 	it("leaves the branch unchanged when the latest native compaction target is missing", () => {
 		const entries = [
 			messageEntry("old-u", { role: "user", content: "old" }),
@@ -403,6 +430,26 @@ describe("findFirstKeptEntryId — replay-safe boundary resolution", () => {
 		// In the active suffix, ordinal 1 is live-u and ordinal 2 is live-a.
 		// Pre-fix this incorrectly returned old-a from the root-relative space.
 		expect(findFirstKeptEntryId(compactedEntries, 1)).toBe("live-a");
+	});
+
+	it("resolves kept-start ordinals after a Magic Context native marker", () => {
+		const compactedEntries = [
+			messageEntry("old-u", { role: "user", content: "old" }),
+			messageEntry("old-a", { role: "assistant", content: [] }),
+			messageEntry("live-u", { role: "user", content: "live" }),
+			messageEntry("live-a", { role: "assistant", content: [] }),
+			{
+				type: "compaction",
+				firstKeptEntryId: "live-u",
+				details: { source: "magic-context", lastCompactedOrdinal: 1855 },
+			},
+		];
+
+		// The active suffix starts at ordinal 1856, preserving continuity with
+		// existing compartments whose last end_message is 1855. Pre-fix this
+		// renumbered live-u/live-a to 1/2 and the historian skipped forever with
+		// nextStartOrdinal=1856 > rawMessageCount.
+		expect(findFirstKeptEntryId(compactedEntries, 1856)).toBe("live-a");
 	});
 
 	it("DEFERS (null) when the kept-start ordinal is a folded-toolResult synthetic user", () => {
