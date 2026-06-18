@@ -127,6 +127,7 @@ import { awaitInFlightRecomps } from "./pi-recomp-runner";
 import { readPiSessionMessages } from "./read-session-pi";
 import { registerStatusLine, updateStatusLine } from "./status-line";
 import { stripTagPrefixFromAssistantMessage } from "./strip-tag-prefix";
+import magicContextSubagentExtension from "./subagent-entry";
 import {
 	MAGIC_CONTEXT_PI_SUBAGENT_ENV,
 	PiSubagentRunner,
@@ -451,6 +452,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		log(
 			`${PREFIX} subagent child detected (${MAGIC_CONTEXT_PI_SUBAGENT_ENV}=1); skipping full extension registration`,
 		);
+		return;
+	}
+
+	if (process.env.PI_SUBAGENT_CHILD === "1") {
+		magicContextSubagentExtension(pi);
 		return;
 	}
 
