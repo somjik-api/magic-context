@@ -121,6 +121,7 @@ import { awaitInFlightRecomps } from "./pi-recomp-runner";
 import { readPiSessionMessages } from "./read-session-pi";
 import { registerStatusLine, updateStatusLine } from "./status-line";
 import { stripTagPrefixFromAssistantMessage } from "./strip-tag-prefix";
+import magicContextSubagentExtension from "./subagent-entry";
 import { PiSubagentRunner } from "./subagent-runner";
 import {
 	buildMagicContextBlock,
@@ -425,6 +426,11 @@ export function resolveDreamerFromConfig(
  * All driven by the user's `magic-context.jsonc` (Pi convention paths).
  */
 export default async function (pi: ExtensionAPI): Promise<void> {
+	if (process.env.PI_SUBAGENT_CHILD === "1") {
+		magicContextSubagentExtension(pi);
+		return;
+	}
+
 	const storageDir = getMagicContextStorageDir();
 	const dbPath = join(storageDir, "context.db");
 
