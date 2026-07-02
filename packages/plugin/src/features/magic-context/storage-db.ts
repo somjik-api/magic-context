@@ -93,7 +93,6 @@ function restrictDatabaseFilePermissions(dbPath: string): void {
     }
 }
 
-
 export interface OpenDatabaseOptions {
     dbPath?: string;
     latestSupportedVersion?: number;
