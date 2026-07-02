@@ -419,8 +419,6 @@ export async function runPiHistorian(deps: PiHistorianDeps): Promise<void> {
 				),
 			);
 
-
-
 			const chunk = readSessionChunk(
 				sessionId,
 				historianChunkTokens,

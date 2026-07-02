@@ -323,8 +323,6 @@ export async function runCompartmentAgent(deps: CompartmentRunnerDeps): Promise<
             ),
         );
 
-
-
         const chunk = readSessionChunk(sessionId, historianChunkTokens, offset, eligibleEndOrdinal);
         telemetry.chunkStartOrdinal = chunk.startIndex;
         telemetry.chunkEndOrdinal = chunk.endIndex;
