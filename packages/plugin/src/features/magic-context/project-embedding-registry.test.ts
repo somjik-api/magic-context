@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { EmbeddingConfig } from "../../config/schema/magic-context";
+import { Database } from "../../shared/sqlite";
 import {
     chunkCanonicalText,
     loadCompartmentChunkEmbeddingsForSearch,

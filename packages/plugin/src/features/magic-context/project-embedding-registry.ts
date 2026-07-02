@@ -624,7 +624,13 @@ export function registerProjectEmbedding(
         prior.runtimeFingerprint === runtimeFingerprint &&
         prior.providerIdentity === providerIdentity;
     if (options.maintenance !== false) {
-        recordActiveEmbeddingIdentity(db, projectIdentity, providerIdentity, chunkModelId, features);
+        recordActiveEmbeddingIdentity(
+            db,
+            projectIdentity,
+            providerIdentity,
+            chunkModelId,
+            features,
+        );
         // A trusted registration just landed — clear any prior untrusted-load latch
         // so GC can resume for this project. Snapshot-only subagent registration
         // is process-local and deliberately does not mutate maintenance state.
