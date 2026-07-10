@@ -44,8 +44,8 @@ import {
     CTX_MEMORY_TOOL_NAME,
     DEFAULT_LIST_LIMIT,
     DEFAULT_SEARCH_LIMIT,
-    LIST_PAGE_CHAR_BUDGET,
 } from "./constants";
+import { formatMemoryList } from "./format-memory-list";
 import {
     CTX_MEMORY_ACTIONS,
     CTX_MEMORY_DREAMER_ACTIONS,
@@ -93,105 +93,6 @@ function getAllowedActions(deps: CtxMemoryToolDeps): [CtxMemoryAction, ...CtxMem
 function normalizeCategory(category?: string): string | undefined {
     const trimmed = category?.trim();
     return trimmed ? trimmed : undefined;
-}
-
-interface MemoryPage {
-    /** Memories selected for this page (already offset-sliced by the caller). */
-    pageMemories: Memory[];
-    /** Total memories in the filtered set across all pages. */
-    totalCount: number;
-    /** Zero-based offset of the first row in `pageMemories`. */
-    offset: number;
-}
-
-function formatMemoryList(page: MemoryPage): string {
-    const { pageMemories, totalCount, offset } = page;
-    if (totalCount === 0) {
-        return "No active memories found.";
-    }
-    if (pageMemories.length === 0) {
-        return `No memories at offset ${offset}. Total is ${totalCount}; use a smaller offset.`;
-    }
-
-    // Apply a hard char budget so a single page can never overflow the model
-    // context, no matter how large `limit` is. Rows beyond the budget are
-    // dropped from THIS page and surfaced via the pagination footer.
-    const allRows = pageMemories.map((memory) => ({
-        id: String(memory.id),
-        category: memory.category,
-        status: memory.status,
-        verification: memory.verificationStatus,
-        updated: new Date(memory.updatedAt).toISOString(),
-        content: memory.content.replace(/\s+/g, " ").trim(),
-    }));
-
-    const rows: typeof allRows = [];
-    let usedChars = 0;
-    for (const row of allRows) {
-        // ~6 columns of separators + content; approximate by content length +
-        // fixed overhead per row. Always include at least one row so a single
-        // oversized memory still returns (truncation handled below).
-        const rowChars = row.content.length + 80;
-        if (rows.length > 0 && usedChars + rowChars > LIST_PAGE_CHAR_BUDGET) {
-            break;
-        }
-        rows.push(row);
-        usedChars += rowChars;
-    }
-
-    const headers = {
-        id: "ID",
-        category: "CATEGORY",
-        status: "STATUS",
-        verification: "VERIFY",
-        updated: "UPDATED",
-        content: "CONTENT",
-    };
-    const widths = {
-        id: Math.max(headers.id.length, ...rows.map((row) => row.id.length)),
-        category: Math.max(headers.category.length, ...rows.map((row) => row.category.length)),
-        status: Math.max(headers.status.length, ...rows.map((row) => row.status.length)),
-        verification: Math.max(
-            headers.verification.length,
-            ...rows.map((row) => row.verification.length),
-        ),
-        updated: Math.max(headers.updated.length, ...rows.map((row) => row.updated.length)),
-    };
-    const formatRow = (row: (typeof rows)[number] | typeof headers) =>
-        [
-            row.id.padEnd(widths.id),
-            row.category.padEnd(widths.category),
-            row.status.padEnd(widths.status),
-            row.verification.padEnd(widths.verification),
-            row.updated.padEnd(widths.updated),
-            row.content,
-        ].join(" | ");
-
-    const shownEnd = offset + rows.length;
-    const hasMore = shownEnd < totalCount;
-    const header = `Showing memories ${offset + 1}-${shownEnd} of ${totalCount} total.`;
-    const footer = hasMore
-        ? `\n\n… ${totalCount - shownEnd} more. Fetch the next page with ctx_memory(action="list", offset=${shownEnd}${
-              pageMemories.length > rows.length ? "" : `, limit=${rows.length}`
-          }).`
-        : "";
-
-    return [
-        header,
-        "",
-        formatRow(headers),
-        [
-            "-".repeat(widths.id),
-            "-".repeat(widths.category),
-            "-".repeat(widths.status),
-            "-".repeat(widths.verification),
-            "-".repeat(widths.updated),
-            "-------",
-        ].join("-+-"),
-        ...rows.map(formatRow),
-    ]
-        .join("\n")
-        .concat(footer);
 }
 
 function filterByCategory(memories: Memory[], category?: string): Memory[] {

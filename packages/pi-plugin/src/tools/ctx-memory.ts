@@ -74,19 +74,13 @@ import {
 } from "@magic-context/core/features/magic-context/workspaces";
 import { log } from "@magic-context/core/shared/logger";
 import { CTX_MEMORY_DESCRIPTION } from "@magic-context/core/tools/ctx-memory/constants";
+import { formatMemoryList } from "@magic-context/core/tools/ctx-memory/format-memory-list";
 import { runImmediateTransaction } from "@magic-context/core/tools/ctx-memory/verification-recording";
 import { type Static, Type } from "typebox";
 
 // Default page size for `list`. Larger than the search default because
 // maintenance tasks page through the full memory set, but still bounded.
 const DEFAULT_LIST_LIMIT = 100;
-// Hard char budget for a single `list` page. A project can accumulate
-// thousands of active memories (hundreds of KB); returning them all in one
-// tool result overflows the dreamer model context and deadlocks the
-// consolidate/verify/archive tasks. The handler stops adding rows at this
-// budget and points the caller at the next page via `offset`.
-const LIST_PAGE_CHAR_BUDGET = 24000;
-
 // Mirrors OpenCode CTX_MEMORY_DREAMER_ACTIONS. `delete` was removed — it was an
 // exact alias of `archive` (both soft-archive); `archive` is the single
 // soft-remove action. Primary agents get write/archive/update/merge on the
@@ -169,100 +163,6 @@ function normalizeLimit(
 function normalizeOffset(offset?: number): number {
 	if (typeof offset !== "number" || !Number.isFinite(offset)) return 0;
 	return Math.max(0, Math.floor(offset));
-}
-
-interface MemoryPage {
-	pageMemories: Memory[];
-	totalCount: number;
-	offset: number;
-}
-
-function formatMemoryList(page: MemoryPage): string {
-	const { pageMemories, totalCount, offset } = page;
-	if (totalCount === 0) return "No active memories found.";
-	if (pageMemories.length === 0)
-		return `No memories at offset ${offset}. Total is ${totalCount}; use a smaller offset.`;
-
-	const allRows = pageMemories.map((m) => ({
-		id: String(m.id),
-		category: m.category,
-		status: m.status,
-		verification: m.verificationStatus,
-		updated: new Date(m.updatedAt).toISOString(),
-		content: m.content.replace(/\s+/g, " ").trim(),
-	}));
-	// Hard char budget so a single page can never overflow the model context,
-	// regardless of how large `limit` is. Always include at least one row.
-	const rows: typeof allRows = [];
-	let usedChars = 0;
-	for (const row of allRows) {
-		const rowChars = row.content.length + 80;
-		if (rows.length > 0 && usedChars + rowChars > LIST_PAGE_CHAR_BUDGET) break;
-		rows.push(row);
-		usedChars += rowChars;
-	}
-
-	const headers = {
-		id: "ID",
-		category: "CATEGORY",
-		status: "STATUS",
-		verification: "VERIFY",
-		updated: "UPDATED",
-		content: "CONTENT",
-	};
-	const widths = {
-		id: Math.max(headers.id.length, ...rows.map((r) => r.id.length)),
-		category: Math.max(
-			headers.category.length,
-			...rows.map((r) => r.category.length),
-		),
-		status: Math.max(
-			headers.status.length,
-			...rows.map((r) => r.status.length),
-		),
-		verification: Math.max(
-			headers.verification.length,
-			...rows.map((r) => r.verification.length),
-		),
-		updated: Math.max(
-			headers.updated.length,
-			...rows.map((r) => r.updated.length),
-		),
-	};
-	const fmt = (r: (typeof rows)[number] | typeof headers) =>
-		[
-			r.id.padEnd(widths.id),
-			r.category.padEnd(widths.category),
-			r.status.padEnd(widths.status),
-			r.verification.padEnd(widths.verification),
-			r.updated.padEnd(widths.updated),
-			r.content,
-		].join(" | ");
-
-	const shownEnd = offset + rows.length;
-	const hasMore = shownEnd < totalCount;
-	const footer = hasMore
-		? `\n\n… ${totalCount - shownEnd} more. Fetch the next page with ctx_memory(action="list", offset=${shownEnd}${
-				pageMemories.length > rows.length ? "" : `, limit=${rows.length}`
-			}).`
-		: "";
-
-	return [
-		`Showing memories ${offset + 1}-${shownEnd} of ${totalCount} total.`,
-		"",
-		fmt(headers),
-		[
-			"-".repeat(widths.id),
-			"-".repeat(widths.category),
-			"-".repeat(widths.status),
-			"-".repeat(widths.verification),
-			"-".repeat(widths.updated),
-			"-------",
-		].join("-+-"),
-		...rows.map(fmt),
-	]
-		.join("\n")
-		.concat(footer);
 }
 
 function isPrimaryMutableMemory(memory: Memory): boolean {

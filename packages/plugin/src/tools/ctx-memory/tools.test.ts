@@ -28,6 +28,7 @@ import type {
 } from "../../features/magic-context/memory/embedding-provider";
 import { Database } from "../../shared/sqlite";
 import { closeQuietly } from "../../shared/sqlite-helpers";
+import { LIST_PAGE_CHAR_BUDGET } from "./constants";
 
 const { createCtxMemoryTools } = await import("./tools");
 
@@ -686,10 +687,27 @@ describe("createCtxMemoryTools", () => {
                 toolContext("ses-dreamer", DREAMER_AGENT),
             );
 
-            expect(result.length).toBeLessThan(40000);
+            expect(result.length).toBeLessThanOrEqual(LIST_PAGE_CHAR_BUDGET);
             expect(result).toContain("of 200 total");
             expect(result).toContain("more.");
             expect(result).toContain("offset=");
+        });
+
+        it("truncates one oversized memory to the hard page budget", async () => {
+            insertMemory(db, {
+                projectPath: "/repo/project",
+                category: "CONSTRAINTS",
+                content: "Y".repeat(LIST_PAGE_CHAR_BUDGET * 2),
+            });
+
+            const result = await tools.ctx_memory.execute(
+                { action: "list", limit: 1 },
+                toolContext("ses-dreamer", DREAMER_AGENT),
+            );
+
+            expect(result.length).toBeLessThanOrEqual(LIST_PAGE_CHAR_BUDGET);
+            expect(result).toContain("content truncated to fit page budget");
+            expect(result).toContain("Showing memories 1-1 of 1 total");
         });
     });
 

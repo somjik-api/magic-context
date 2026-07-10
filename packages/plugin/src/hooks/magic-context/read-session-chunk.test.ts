@@ -11,6 +11,7 @@ import {
     getRawSessionMessageIdsThrough,
     readRawSessionMessages,
     readSessionChunk,
+    setRawMessageProvider,
     withRawSessionMessageCache,
 } from "./read-session-chunk";
 
@@ -188,6 +189,43 @@ describe("readSessionChunk", () => {
         expect(chunk.text).toContain("[2-3] A: done");
         expect(chunk.text).not.toContain("msg_");
         expect(chunk.text).not.toContain("tool call");
+    });
+
+    it("uses absolute provider ordinals when reporting token-capped remaining history", () => {
+        const sessionId = "ses-provider-absolute";
+        const largeText = "X".repeat(10_000);
+        const cleanup = setRawMessageProvider(sessionId, {
+            readMessages: () => [
+                {
+                    ordinal: 1_856,
+                    id: "p-1856",
+                    role: "user",
+                    parts: [{ type: "text", text: largeText }],
+                },
+                {
+                    ordinal: 1_857,
+                    id: "p-1857",
+                    role: "assistant",
+                    parts: [{ type: "text", text: largeText }],
+                },
+                {
+                    ordinal: 1_858,
+                    id: "p-1858",
+                    role: "user",
+                    parts: [{ type: "text", text: largeText }],
+                },
+            ],
+        });
+
+        try {
+            const chunk = readSessionChunk(sessionId, 1, 1_856);
+
+            expect(chunk.endIndex).toBe(1_856);
+            expect(chunk.messageCount).toBe(1);
+            expect(chunk.hasMore).toBe(true);
+        } finally {
+            cleanup();
+        }
     });
 
     it("reuses cached raw messages within nested cache scopes and clears afterward", () => {

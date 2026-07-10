@@ -9,6 +9,8 @@ import { closeQuietly } from "@magic-context/core/shared/sqlite-helpers";
 import { createTestDb, fakeContext } from "../test-utils.test";
 import { createCtxMemoryTool } from "./ctx-memory";
 
+const LIST_PAGE_CHAR_BUDGET = 24_000;
+
 describe("createCtxMemoryTool", () => {
 	it("rejects list for primary agents and allows it for dreamer agents", async () => {
 		const db = createTestDb();
@@ -904,7 +906,7 @@ describe("createCtxMemoryTool", () => {
 				ctx,
 			);
 			const text1 = page1.content[0]?.text ?? "";
-			expect(text1.length).toBeLessThan(40000);
+			expect(text1.length).toBeLessThanOrEqual(LIST_PAGE_CHAR_BUDGET);
 			expect(text1).toContain("of 60 total");
 			expect(text1).toContain("more.");
 			expect(text1).toContain("offset=");
@@ -918,6 +920,45 @@ describe("createCtxMemoryTool", () => {
 				ctx,
 			);
 			expect(beyond.content[0]?.text).toContain("use a smaller offset");
+		} finally {
+			closeQuietly(db);
+		}
+	});
+
+	it("truncates one oversized memory to the hard page budget", async () => {
+		const db = createTestDb();
+		try {
+			const dreamer = createCtxMemoryTool({
+				db,
+				memoryEnabled: true,
+				embeddingEnabled: false,
+				allowDreamerActions: true,
+			});
+			const result = await dreamer.execute(
+				"l-oversized",
+				{
+					action: "write",
+					category: "CONSTRAINTS",
+					content: "Y".repeat(LIST_PAGE_CHAR_BUDGET * 2),
+				},
+				new AbortController().signal,
+				undefined,
+				fakeContext("ses-memory") as never,
+			);
+			expect(result.isError).toBeUndefined();
+
+			const page = await dreamer.execute(
+				"l-list-oversized",
+				{ action: "list", limit: 1 },
+				new AbortController().signal,
+				undefined,
+				fakeContext("ses-memory") as never,
+			);
+			const text = page.content[0]?.text ?? "";
+
+			expect(text.length).toBeLessThanOrEqual(LIST_PAGE_CHAR_BUDGET);
+			expect(text).toContain("content truncated to fit page budget");
+			expect(text).toContain("Showing memories 1-1 of 1 total");
 		} finally {
 			closeQuietly(db);
 		}

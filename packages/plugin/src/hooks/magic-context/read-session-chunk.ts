@@ -99,7 +99,7 @@ let activeAbsoluteCountCache: Map<string, number> | null = null;
 export interface RawMessageProvider {
     readMessages(): RawMessage[];
     readMessageById?: (messageId: string) => RawMessage | null;
-    /** Optional fast count path; falls back to readMessages().length. */
+    /** Optional fast absolute-count path; falls back to max(readMessages().ordinal). */
     getMessageCount?: () => number;
 }
 
@@ -456,12 +456,12 @@ export function readSessionChunk(
     eligibleEndOrdinal?: number,
 ): SessionChunk {
     const messages = readRawSessionMessages(sessionId);
-    // When a tail-only slice is primed, `messages.length` is just the slice
-    // size while ordinals are ABSOLUTE — comparing an absolute `lastOrdinal`
-    // against the slice length would wrongly report hasMore=true forever
-    // (historian re-fires on an already-finished session). Use the absolute
-    // session count whenever the prime recorded one.
-    const totalMessageCount = getCachedAbsoluteMessageCount(sessionId) ?? messages.length;
+    // Provider-backed and primed tail slices carry ABSOLUTE ordinals, so their
+    // array length is not a session count. Compare `lastOrdinal` against the
+    // cached absolute count when available, otherwise against this snapshot's
+    // maximum ordinal. Full OpenCode histories remain equivalent (1..N).
+    const totalMessageCount =
+        getCachedAbsoluteMessageCount(sessionId) ?? getAbsoluteRawMessageCount(messages);
     const startOrdinal = Math.max(1, offset);
     const lines: string[] = [];
     const lineMeta: SessionChunkLine[] = [];
