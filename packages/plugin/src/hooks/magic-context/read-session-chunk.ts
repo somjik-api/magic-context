@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { OMO_INTERNAL_INITIATOR_MARKER } from "../../shared/internal-initiator-marker";
 import { removeSystemReminders } from "../../shared/system-directive";
 import {
@@ -104,6 +105,15 @@ export interface RawMessageProvider {
 }
 
 const sessionProviders = new Map<string, RawMessageProvider>();
+const scopedSessionProviders = new AsyncLocalStorage<ReadonlyMap<string, RawMessageProvider>>();
+
+function getRawMessageProvider(sessionId: string): RawMessageProvider | undefined {
+    return scopedSessionProviders.getStore()?.get(sessionId) ?? sessionProviders.get(sessionId);
+}
+
+function hasRawMessageProvider(sessionId: string): boolean {
+    return getRawMessageProvider(sessionId) !== undefined;
+}
 
 /**
  * Register a per-session source for raw message reading. Returns an
@@ -124,8 +134,11 @@ export function setRawMessageProvider(sessionId: string, provider: RawMessagePro
  * on return regardless of throw — preferred over manual
  * `setRawMessageProvider` / `cleanup()` pairs.
  *
- * ASYNC-SAFE: if `fn` returns a promise, cleanup is deferred until that promise
- * settles, so the provider stays registered for the WHOLE async scope. A bare
+ * ASYNC/CONCURRENCY-SAFE: the provider is also stored in AsyncLocalStorage, so
+ * a concurrent transform may replace the process-global session slot without
+ * changing reads in this async chain. If `fn` returns a promise, cleanup is
+ * deferred until that promise settles, so the provider stays registered for the
+ * WHOLE async scope. A bare
  * synchronous `finally` would unregister at `fn`'s FIRST `await` (the function
  * returns a pending promise immediately), leaving later awaited reads —
  * e.g. Pi's post-commit `queueDropsForCompartmentalizedMessages` — with no
@@ -138,23 +151,27 @@ export function withRawMessageProvider<T>(
     provider: RawMessageProvider,
     fn: () => T,
 ): T {
-    const cleanup = setRawMessageProvider(sessionId, provider);
-    let result: T;
-    try {
-        result = fn();
-    } catch (error) {
+    const scopedProviders = new Map(scopedSessionProviders.getStore() ?? []);
+    scopedProviders.set(sessionId, provider);
+    return scopedSessionProviders.run(scopedProviders, () => {
+        const cleanup = setRawMessageProvider(sessionId, provider);
+        let result: T;
+        try {
+            result = fn();
+        } catch (error) {
+            cleanup();
+            throw error;
+        }
+        if (
+            result !== null &&
+            typeof result === "object" &&
+            typeof (result as { then?: unknown }).then === "function"
+        ) {
+            return (result as unknown as Promise<unknown>).finally(cleanup) as unknown as T;
+        }
         cleanup();
-        throw error;
-    }
-    if (
-        result !== null &&
-        typeof result === "object" &&
-        typeof (result as { then?: unknown }).then === "function"
-    ) {
-        return (result as unknown as Promise<unknown>).finally(cleanup) as unknown as T;
-    }
-    cleanup();
-    return result;
+        return result;
+    });
 }
 
 /** Strip system-reminder blocks and OMO markers from user text for chunk compaction. */
@@ -249,7 +266,7 @@ export function primeTailRawMessageCache(args: {
     if (activeRawMessageCache.has(sessionId)) return false;
     // A registered provider (Pi) is the authoritative in-memory source and is
     // already cheap; never shadow it with a DB read.
-    if (sessionProviders.has(sessionId)) return false;
+    if (hasRawMessageProvider(sessionId)) return false;
     if (!openCodeDbExists()) return false;
     // Need a real boundary + anchor to read the tail; otherwise fall through to
     // the full read (correct for the no-compartment / #132 case).
@@ -296,14 +313,14 @@ export function primeInMemoryTailRawMessageCache(args: {
     const { sessionId, messages, absoluteMessageCount } = args;
     if (!activeRawMessageCache) return false;
     if (activeRawMessageCache.has(sessionId)) return false;
-    if (sessionProviders.has(sessionId)) return false;
+    if (hasRawMessageProvider(sessionId)) return false;
     activeRawMessageCache.set(sessionId, messages);
     activeAbsoluteCountCache?.set(sessionId, absoluteMessageCount);
     return true;
 }
 
 export function readRawSessionMessageById(sessionId: string, messageId: string): RawMessage | null {
-    const provider = sessionProviders.get(sessionId);
+    const provider = getRawMessageProvider(sessionId);
     if (provider?.readMessageById) {
         return provider.readMessageById(messageId);
     }
@@ -315,7 +332,7 @@ export function readRawSessionMessageById(sessionId: string, messageId: string):
 }
 
 function readRawSessionMessagesFromSource(sessionId: string): RawMessage[] {
-    const provider = sessionProviders.get(sessionId);
+    const provider = getRawMessageProvider(sessionId);
     if (provider) return provider.readMessages();
     // No provider: fall back to OpenCode's session DB — but only if it exists.
     // A Pi-only install has no opencode.db, and a Pi transform whose provider
@@ -331,7 +348,7 @@ function getAbsoluteRawMessageCount(messages: readonly RawMessage[]): number {
 }
 
 export function getRawSessionMessageCount(sessionId: string): number {
-    const provider = sessionProviders.get(sessionId);
+    const provider = getRawMessageProvider(sessionId);
     if (provider) {
         if (provider.getMessageCount) return provider.getMessageCount();
         return getAbsoluteRawMessageCount(provider.readMessages());

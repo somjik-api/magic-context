@@ -304,22 +304,34 @@ function getToolCallIds(content: unknown): Set<string> {
  * repeated calls inside a single trigger evaluation don't re-walk the
  * branch.
  */
-export function readPiSessionMessages(ctx: ExtensionContext): RawMessage[] {
+function readPiBranchEntries(ctx: ExtensionContext): unknown[] {
 	const sm = ctx.sessionManager;
 	if (sm === undefined) return [];
 	const getBranch = (sm as { getBranch?: (fromId?: string) => unknown[] })
 		.getBranch;
 	if (typeof getBranch !== "function") return [];
 
-	let entries: unknown[];
 	try {
-		entries = getBranch.call(sm);
+		const entries = getBranch.call(sm);
+		return Array.isArray(entries) ? entries : [];
 	} catch {
 		return [];
 	}
-	if (!Array.isArray(entries)) return [];
+}
 
-	return convertActiveEntriesToRawMessages(entries);
+export function readPiSessionMessages(ctx: ExtensionContext): RawMessage[] {
+	return convertActiveEntriesToRawMessages(readPiBranchEntries(ctx));
+}
+
+/**
+ * Read the complete active Pi branch from its root, ignoring native compaction
+ * boundaries. Explicit full/partial recomp and session upgrade operate in the
+ * original 1-based ordinal space and must use this reader. Incremental historian
+ * and steady-state context paths must keep using `readPiSessionMessages()` so
+ * they only inspect the provider-visible suffix.
+ */
+export function readFullPiSessionMessages(ctx: ExtensionContext): RawMessage[] {
+	return convertEntriesToRawMessages(readPiBranchEntries(ctx));
 }
 
 /**

@@ -12,6 +12,7 @@ import {
     readRawSessionMessages,
     readSessionChunk,
     setRawMessageProvider,
+    withRawMessageProvider,
     withRawSessionMessageCache,
 } from "./read-session-chunk";
 
@@ -226,6 +227,38 @@ describe("readSessionChunk", () => {
         } finally {
             cleanup();
         }
+    });
+
+    it("keeps an async-scoped provider stable when a concurrent pass replaces the global provider", async () => {
+        const sessionId = "ses-provider-concurrent";
+        const fullMessages = [
+            {
+                ordinal: 1,
+                id: "full-1",
+                role: "user" as const,
+                parts: [{ type: "text" as const, text: "full" }],
+            },
+        ];
+        const suffixMessages = [
+            {
+                ordinal: 2,
+                id: "suffix-2",
+                role: "user" as const,
+                parts: [{ type: "text" as const, text: "suffix" }],
+            },
+        ];
+        let unregisterSuffix: (() => void) | undefined;
+
+        await withRawMessageProvider(sessionId, { readMessages: () => fullMessages }, async () => {
+            await Promise.resolve();
+            unregisterSuffix = setRawMessageProvider(sessionId, {
+                readMessages: () => suffixMessages,
+            });
+            expect(readRawSessionMessages(sessionId)).toEqual(fullMessages);
+        });
+
+        expect(readRawSessionMessages(sessionId)).toEqual(suffixMessages);
+        unregisterSuffix?.();
     });
 
     it("reuses cached raw messages within nested cache scopes and clears afterward", () => {

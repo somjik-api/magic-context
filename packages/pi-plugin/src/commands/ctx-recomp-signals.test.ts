@@ -32,6 +32,11 @@ describe("/ctx-recomp post-completion signal contract", () => {
 		expect(codeOnly).toContain("spawnPiRecompRun(");
 	});
 
+	test("reads the full Pi branch because full recomp starts at message 1", () => {
+		expect(codeOnly).toContain("readFullPiSessionMessages(ctx)");
+		expect(codeOnly).not.toContain("readPiSessionMessages(ctx)");
+	});
+
 	test("uses DEFERRED history-refresh signal (background-safe)", () => {
 		expect(codeOnly).toContain("signalPiDeferredHistoryRefresh(sessionId)");
 	});

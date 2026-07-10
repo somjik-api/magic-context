@@ -2,11 +2,13 @@
 
 import { describe, expect, it } from "bun:test";
 import { findFirstKeptEntryId } from "./pi-historian-runner";
+import * as readSessionPi from "./read-session-pi";
 import {
 	convertActiveEntriesToRawMessages,
 	convertEntriesToRawMessages,
 	findLastModelKeyFromBranch,
 	isMidTurnPi,
+	readPiSessionMessages,
 	sliceEntriesFromLatestCompaction,
 } from "./read-session-pi";
 
@@ -412,6 +414,51 @@ describe("Pi native compaction-aware raw history", () => {
 			{ ordinal: 1856, id: "live-u", role: "user" },
 			{ ordinal: 1857, id: "live-a", role: "assistant" },
 			{ ordinal: 1858, id: "live-u2", role: "user" },
+		]);
+	});
+
+	it("exposes the full branch only for explicit recomp while normal reads stay on the active suffix", () => {
+		const entries = [
+			messageEntry("old-u", { role: "user", content: "old" }),
+			messageEntry("old-a", { role: "assistant", content: [] }),
+			messageEntry("live-u", { role: "user", content: "live" }),
+			messageEntry("live-a", { role: "assistant", content: [] }),
+			{
+				type: "compaction",
+				firstKeptEntryId: "live-u",
+				details: { source: "magic-context", lastCompactedOrdinal: 2 },
+			},
+		];
+		const ctx = {
+			sessionManager: { getBranch: () => entries },
+		} as never;
+		const readFullPiSessionMessages = (
+			readSessionPi as typeof readSessionPi & {
+				readFullPiSessionMessages?: typeof readPiSessionMessages;
+			}
+		).readFullPiSessionMessages;
+
+		expect(typeof readFullPiSessionMessages).toBe("function");
+		if (!readFullPiSessionMessages) return;
+		expect(
+			readFullPiSessionMessages(ctx).map((message) => ({
+				ordinal: message.ordinal,
+				id: message.id,
+			})),
+		).toEqual([
+			{ ordinal: 1, id: "old-u" },
+			{ ordinal: 2, id: "old-a" },
+			{ ordinal: 3, id: "live-u" },
+			{ ordinal: 4, id: "live-a" },
+		]);
+		expect(
+			readPiSessionMessages(ctx).map((message) => ({
+				ordinal: message.ordinal,
+				id: message.id,
+			})),
+		).toEqual([
+			{ ordinal: 3, id: "live-u" },
+			{ ordinal: 4, id: "live-a" },
 		]);
 	});
 
