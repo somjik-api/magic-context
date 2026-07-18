@@ -34,8 +34,8 @@
  *     prior tool_use parts.
  *   - When a tool-result run has no following user message (live tail
  *     ends with `assistant + tool_result`), we emit a synthetic user
- *     RawMessage with no stable id (id="" and ordinal still
- *     incremented). Formatting treats it as a normal user turn.
+ *     RawMessage whose id is derived from the first folded toolResult
+ *     entry. Formatting treats it as a normal user turn.
  *
  * # Ordinals
  *
@@ -53,20 +53,15 @@
  * needs to summarize. Future steps may surface compaction/branch
  * summary entries differently if needed.
  *
- * # Why not use Pi's compaction directly?
+ * # Pi native compaction boundary
  *
- * Pi has its own compaction primitive (CompactionEntry +
- * `pi.compact()`). Magic Context replaces it with historian-driven
- * compartments because:
- *   1. Compartments preserve a structured XML view of older turns
- *      (categorized facts, ranges, dates) that Pi's monolithic
- *      summary text can't.
- *   2. Cross-harness consistency: OpenCode users see the same
- *      `<session-history>` shape regardless of which harness ran the
- *      historian.
- *   3. Pi's compaction lives in the session JSONL file; magic-context
- *      compartments live in the shared cortexkit DB scoped by
- *      sessionId. Different storage, different lifecycle.
+ * Magic Context still owns semantic history through structured DB
+ * compartments, but Pi native compaction is the physical branch-trim
+ * primitive used to keep the provider-visible JSONL suffix small. Raw
+ * historian reads therefore start at the latest native compaction's
+ * `firstKeptEntryId` when one exists. This keeps MC ordinals aligned
+ * with the active provider-visible suffix instead of reprocessing a
+ * root-relative prefix that Pi has already physically summarized.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -88,6 +83,95 @@ import type { RawMessage } from "@magic-context/core/hooks/magic-context/read-se
  * `synth-user-` literal.
  */
 export const SYNTH_USER_ID_PREFIX = "synth-user-";
+
+function getBranchEntryId(entry: unknown): string | null {
+	if (entry === null || typeof entry !== "object") return null;
+	const id = (entry as { id?: unknown }).id;
+	return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+interface LatestCompactionBoundary {
+	firstKeptEntryId: string;
+	lastCompactedOrdinal: number | null;
+}
+
+function getLatestCompactionBoundary(
+	entries: readonly unknown[],
+): LatestCompactionBoundary | null {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry === null || typeof entry !== "object") continue;
+		const record = entry as {
+			type?: unknown;
+			firstKeptEntryId?: unknown;
+			details?: unknown;
+		};
+		if (
+			record.type !== "compaction" ||
+			typeof record.firstKeptEntryId !== "string" ||
+			record.firstKeptEntryId.length === 0
+		) {
+			continue;
+		}
+		const details = record.details as { lastCompactedOrdinal?: unknown } | null;
+		const lastCompactedOrdinal =
+			details !== null &&
+			typeof details === "object" &&
+			typeof details.lastCompactedOrdinal === "number" &&
+			Number.isFinite(details.lastCompactedOrdinal)
+				? details.lastCompactedOrdinal
+				: null;
+		return { firstKeptEntryId: record.firstKeptEntryId, lastCompactedOrdinal };
+	}
+	return null;
+}
+
+export function findLatestCompactionFirstKeptEntryId(
+	entries: readonly unknown[],
+): string | null {
+	return getLatestCompactionBoundary(entries)?.firstKeptEntryId ?? null;
+}
+
+function sliceEntriesFromLatestCompactionWithOrdinalBase(
+	entries: readonly unknown[],
+): { entries: unknown[]; firstOrdinal: number } {
+	const boundary = getLatestCompactionBoundary(entries);
+	if (boundary === null || boundary.lastCompactedOrdinal === null) {
+		// A plain Pi compaction does not record how its kept tail maps onto
+		// Magic Context's durable compartment ordinals. Re-basing that suffix to
+		// 1 creates a second ordinal epoch; using its root-relative position makes
+		// a fresh compartment sequence start above 1. Keep the complete branch
+		// until an MC-authored marker supplies an explicit absolute boundary.
+		return { entries: [...entries], firstOrdinal: 1 };
+	}
+	const firstKeptIndex = entries.findIndex(
+		(entry) => getBranchEntryId(entry) === boundary.firstKeptEntryId,
+	);
+	if (firstKeptIndex < 0) return { entries: [...entries], firstOrdinal: 1 };
+	return {
+		entries: [...entries.slice(firstKeptIndex)],
+		firstOrdinal: boundary.lastCompactedOrdinal + 1,
+	};
+}
+
+export function sliceEntriesFromLatestCompaction(
+	entries: readonly unknown[],
+): unknown[] {
+	return sliceEntriesFromLatestCompactionWithOrdinalBase(entries).entries;
+}
+
+export function convertActiveEntriesToRawMessages(
+	entries: readonly unknown[],
+): RawMessage[] {
+	const active = sliceEntriesFromLatestCompactionWithOrdinalBase(entries);
+	const messages = convertEntriesToRawMessages(active.entries);
+	if (active.firstOrdinal === 1) return messages;
+	const ordinalOffset = active.firstOrdinal - 1;
+	return messages.map((message) => ({
+		...message,
+		ordinal: message.ordinal + ordinalOffset,
+	}));
+}
 
 /**
  * The single source of truth for a Pi message's durable stable id.
@@ -246,22 +330,34 @@ function getToolCallIds(content: unknown): Set<string> {
  * repeated calls inside a single trigger evaluation don't re-walk the
  * branch.
  */
-export function readPiSessionMessages(ctx: ExtensionContext): RawMessage[] {
+function readPiBranchEntries(ctx: ExtensionContext): unknown[] {
 	const sm = ctx.sessionManager;
 	if (sm === undefined) return [];
 	const getBranch = (sm as { getBranch?: (fromId?: string) => unknown[] })
 		.getBranch;
 	if (typeof getBranch !== "function") return [];
 
-	let entries: unknown[];
 	try {
-		entries = getBranch.call(sm);
+		const entries = getBranch.call(sm);
+		return Array.isArray(entries) ? entries : [];
 	} catch {
 		return [];
 	}
-	if (!Array.isArray(entries)) return [];
+}
 
-	return convertEntriesToRawMessages(entries);
+export function readPiSessionMessages(ctx: ExtensionContext): RawMessage[] {
+	return convertActiveEntriesToRawMessages(readPiBranchEntries(ctx));
+}
+
+/**
+ * Read the complete active Pi branch from its root, ignoring native compaction
+ * boundaries. Explicit full/partial recomp and session upgrade operate in the
+ * original 1-based ordinal space and must use this reader. Incremental historian
+ * and steady-state context paths must keep using `readPiSessionMessages()` so
+ * they only inspect the provider-visible suffix.
+ */
+export function readFullPiSessionMessages(ctx: ExtensionContext): RawMessage[] {
+	return convertEntriesToRawMessages(readPiBranchEntries(ctx));
 }
 
 /**

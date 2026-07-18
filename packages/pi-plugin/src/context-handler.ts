@@ -192,6 +192,7 @@ import { hasVisibleNoteReadCallPi } from "./note-visibility-pi";
 import { type PiHistorianDeps, runPiHistorian } from "./pi-historian-runner";
 import { injectSyntheticTodowriteForPi } from "./pi-todo-inject";
 import {
+	convertActiveEntriesToRawMessages,
 	convertEntriesToRawMessages,
 	findLastModelKeyFromBranch,
 	isMidTurnPi,
@@ -1910,7 +1911,7 @@ export function registerPiContextHandler(
 			const rawMessageProvider = {
 				readMessages: () =>
 					branchEntries !== null
-						? convertEntriesToRawMessages([...branchEntries])
+						? convertActiveEntriesToRawMessages(branchEntries)
 						: readPiSessionMessages(ctx),
 				readMessageById: (messageId: string) =>
 					readPiSessionMessageById(ctx, messageId),

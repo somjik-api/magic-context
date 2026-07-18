@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { OMO_INTERNAL_INITIATOR_MARKER } from "../../shared/internal-initiator-marker";
 import { removeSystemReminders } from "../../shared/system-directive";
 import {
@@ -117,13 +118,22 @@ export interface RawMessageProvider {
         after: RawMessageOrdinalAnchor | null,
         limit: number,
     ) => RawMessageOrdinalEntry[];
-    /** Optional fast count path; falls back to readMessages().length. */
+    /** Optional fast absolute-count path; falls back to max(readMessages().ordinal). */
     getMessageCount?: () => number;
     /** Stored row count including compaction summaries, used for ordinal drift detection. */
     getStoredMessageCount?: () => number;
 }
 
 const sessionProviders = new Map<string, RawMessageProvider>();
+const scopedSessionProviders = new AsyncLocalStorage<ReadonlyMap<string, RawMessageProvider>>();
+
+function getRawMessageProvider(sessionId: string): RawMessageProvider | undefined {
+    return scopedSessionProviders.getStore()?.get(sessionId) ?? sessionProviders.get(sessionId);
+}
+
+function hasRawMessageProvider(sessionId: string): boolean {
+    return getRawMessageProvider(sessionId) !== undefined;
+}
 
 /**
  * Register a per-session source for raw message reading. Returns an
@@ -144,8 +154,11 @@ export function setRawMessageProvider(sessionId: string, provider: RawMessagePro
  * on return regardless of throw — preferred over manual
  * `setRawMessageProvider` / `cleanup()` pairs.
  *
- * ASYNC-SAFE: if `fn` returns a promise, cleanup is deferred until that promise
- * settles, so the provider stays registered for the WHOLE async scope. A bare
+ * ASYNC/CONCURRENCY-SAFE: the provider is also stored in AsyncLocalStorage, so
+ * a concurrent transform may replace the process-global session slot without
+ * changing reads in this async chain. If `fn` returns a promise, cleanup is
+ * deferred until that promise settles, so the provider stays registered for the
+ * WHOLE async scope. A bare
  * synchronous `finally` would unregister at `fn`'s FIRST `await` (the function
  * returns a pending promise immediately), leaving later awaited reads —
  * e.g. Pi's post-commit `queueDropsForCompartmentalizedMessages` — with no
@@ -158,23 +171,27 @@ export function withRawMessageProvider<T>(
     provider: RawMessageProvider,
     fn: () => T,
 ): T {
-    const cleanup = setRawMessageProvider(sessionId, provider);
-    let result: T;
-    try {
-        result = fn();
-    } catch (error) {
+    const scopedProviders = new Map(scopedSessionProviders.getStore() ?? []);
+    scopedProviders.set(sessionId, provider);
+    return scopedSessionProviders.run(scopedProviders, () => {
+        const cleanup = setRawMessageProvider(sessionId, provider);
+        let result: T;
+        try {
+            result = fn();
+        } catch (error) {
+            cleanup();
+            throw error;
+        }
+        if (
+            result !== null &&
+            typeof result === "object" &&
+            typeof (result as { then?: unknown }).then === "function"
+        ) {
+            return (result as unknown as Promise<unknown>).finally(cleanup) as unknown as T;
+        }
         cleanup();
-        throw error;
-    }
-    if (
-        result !== null &&
-        typeof result === "object" &&
-        typeof (result as { then?: unknown }).then === "function"
-    ) {
-        return (result as unknown as Promise<unknown>).finally(cleanup) as unknown as T;
-    }
-    cleanup();
-    return result;
+        return result;
+    });
 }
 
 /** Strip system-reminder blocks and OMO markers from user text for chunk compaction. */
@@ -242,7 +259,7 @@ export function readRawSessionMessagePage(
     limit: number,
     finalWatermark: number,
 ): RawMessage[] {
-    const provider = sessionProviders.get(sessionId);
+    const provider = getRawMessageProvider(sessionId);
     if (provider?.readMessagePage) {
         return provider.readMessagePage(afterOrdinal, limit, finalWatermark);
     }
@@ -261,10 +278,10 @@ export function readRawSessionMessagePage(
 }
 
 export function getRawSessionMessageOrdinalCount(sessionId: string): number {
-    const provider = sessionProviders.get(sessionId);
+    const provider = getRawMessageProvider(sessionId);
     if (provider) {
         if (provider.getMessageCount) return provider.getMessageCount();
-        return provider.readMessages().length;
+        return getAbsoluteRawMessageCount(provider.readMessages());
     }
     if (!openCodeDbExists()) return 0;
     return withReadOnlySessionDb((db) => countRawSessionMessageOrdinalsFromDb(db, sessionId));
@@ -306,7 +323,7 @@ export function primeTailRawMessageCache(args: {
     if (activeRawMessageCache.has(sessionId)) return false;
     // A registered provider (Pi) is the authoritative in-memory source and is
     // already cheap; never shadow it with a DB read.
-    if (sessionProviders.has(sessionId)) return false;
+    if (hasRawMessageProvider(sessionId)) return false;
     if (!openCodeDbExists()) return false;
     // Need a real boundary + anchor to read the tail; otherwise fall through to
     // the full read (correct for the no-compartment / #132 case).
@@ -353,7 +370,7 @@ export function primeInMemoryTailRawMessageCache(args: {
     const { sessionId, messages, absoluteMessageCount } = args;
     if (!activeRawMessageCache) return false;
     if (activeRawMessageCache.has(sessionId)) return false;
-    if (sessionProviders.has(sessionId)) return false;
+    if (hasRawMessageProvider(sessionId)) return false;
     activeRawMessageCache.set(sessionId, messages);
     activeAbsoluteCountCache?.set(sessionId, absoluteMessageCount);
     return true;
@@ -364,7 +381,7 @@ export function readRawSessionMessageOrdinalPage(
     after: RawMessageOrdinalAnchor | null,
     limit: number,
 ): RawMessageOrdinalEntry[] {
-    const provider = sessionProviders.get(sessionId);
+    const provider = getRawMessageProvider(sessionId);
     if (provider?.readMessageOrdinalPage) return provider.readMessageOrdinalPage(after, limit);
     if (provider) {
         const rows = provider
@@ -394,7 +411,7 @@ export function readRawSessionMessageOrdinalPage(
 }
 
 export function getRawSessionStoredMessageCount(sessionId: string): number {
-    const provider = sessionProviders.get(sessionId);
+    const provider = getRawMessageProvider(sessionId);
     if (provider?.getStoredMessageCount) return provider.getStoredMessageCount();
     if (provider) return provider.readMessages().length;
     if (!openCodeDbExists()) return 0;
@@ -402,7 +419,7 @@ export function getRawSessionStoredMessageCount(sessionId: string): number {
 }
 
 export function readRawSessionMessageIdOrdinals(sessionId: string): Map<string, number> {
-    const provider = sessionProviders.get(sessionId);
+    const provider = getRawMessageProvider(sessionId);
     if (provider?.readMessageIdOrdinals) return provider.readMessageIdOrdinals();
     if (provider) {
         return new Map(provider.readMessages().map((message) => [message.id, message.ordinal]));
@@ -415,7 +432,7 @@ export function readRawSessionMessagePartsById(
     sessionId: string,
     messageId: string,
 ): RawMessageParts | null {
-    const provider = sessionProviders.get(sessionId);
+    const provider = getRawMessageProvider(sessionId);
     if (provider?.readMessagePartsById) return provider.readMessagePartsById(messageId);
     if (provider?.readMessageById) return provider.readMessageById(messageId);
     if (provider) {
@@ -431,7 +448,7 @@ export function readRawSessionMessageOrdinalById(
     sessionId: string,
     messageId: string,
 ): number | null {
-    const provider = sessionProviders.get(sessionId);
+    const provider = getRawMessageProvider(sessionId);
     if (provider?.readMessageOrdinalById) {
         return provider.readMessageOrdinalById(messageId);
     }
@@ -466,7 +483,7 @@ export function readRawSessionMessageOrdinalById(
 }
 
 export function readRawSessionMessageById(sessionId: string, messageId: string): RawMessage | null {
-    const provider = sessionProviders.get(sessionId);
+    const provider = getRawMessageProvider(sessionId);
     if (provider?.readMessageById) {
         return provider.readMessageById(messageId);
     }
@@ -478,7 +495,7 @@ export function readRawSessionMessageById(sessionId: string, messageId: string):
 }
 
 function readRawSessionMessagesFromSource(sessionId: string): RawMessage[] {
-    const provider = sessionProviders.get(sessionId);
+    const provider = getRawMessageProvider(sessionId);
     if (provider) return provider.readMessages();
     // No provider: fall back to OpenCode's session DB — but only if it exists.
     // A Pi-only install has no opencode.db, and a Pi transform whose provider
@@ -489,11 +506,21 @@ function readRawSessionMessagesFromSource(sessionId: string): RawMessage[] {
     return withReadOnlySessionDb((db) => readRawSessionMessagesFromDb(db, sessionId));
 }
 
+function getAbsoluteRawMessageCount(messages: readonly RawMessage[]): number {
+    return messages.reduce((max, message) => Math.max(max, message.ordinal), 0);
+}
+
 export function getRawSessionMessageCount(sessionId: string): number {
-    const provider = sessionProviders.get(sessionId);
+    const provider = getRawMessageProvider(sessionId);
     if (provider) {
         if (provider.getMessageCount) return provider.getMessageCount();
-        return provider.readMessages().length;
+        return getAbsoluteRawMessageCount(provider.readMessages());
+    }
+    if (activeRawMessageCache) {
+        const cached = activeRawMessageCache.get(sessionId);
+        if (cached) {
+            return activeAbsoluteCountCache?.get(sessionId) ?? getAbsoluteRawMessageCount(cached);
+        }
     }
     if (!openCodeDbExists()) return 0;
     return withReadOnlySessionDb((db) => getRawSessionMessageCountFromDb(db, sessionId));
@@ -609,12 +636,12 @@ export function readSessionChunk(
     eligibleEndOrdinal?: number,
 ): SessionChunk {
     const messages = readRawSessionMessages(sessionId);
-    // When a tail-only slice is primed, `messages.length` is just the slice
-    // size while ordinals are ABSOLUTE — comparing an absolute `lastOrdinal`
-    // against the slice length would wrongly report hasMore=true forever
-    // (historian re-fires on an already-finished session). Use the absolute
-    // session count whenever the prime recorded one.
-    const totalMessageCount = getCachedAbsoluteMessageCount(sessionId) ?? messages.length;
+    // Provider-backed and primed tail slices carry ABSOLUTE ordinals, so their
+    // array length is not a session count. Compare `lastOrdinal` against the
+    // cached absolute count when available, otherwise against this snapshot's
+    // maximum ordinal. Full OpenCode histories remain equivalent (1..N).
+    const totalMessageCount =
+        getCachedAbsoluteMessageCount(sessionId) ?? getAbsoluteRawMessageCount(messages);
     const startOrdinal = Math.max(1, offset);
     const lines: string[] = [];
     const lineMeta: SessionChunkLine[] = [];

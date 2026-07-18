@@ -54,11 +54,13 @@ import { initializeDatabase } from "../../features/magic-context/storage-db";
 import { Database } from "../../shared/sqlite";
 import { closeQuietly } from "../../shared/sqlite-helpers";
 import {
+    getRawHistoryEligibility,
     hasRunnableCompartmentWindow,
     resolveOpenCodeProtectedTailBoundary,
     resolveWrapupProtectedTailBoundary,
     validateBoundarySnapshot,
 } from "./protected-tail-boundary";
+import { withRawMessageProvider } from "./read-session-chunk";
 
 const boundaryTempDirs: string[] = [];
 const originalBoundaryXdg = process.env.XDG_DATA_HOME;
@@ -114,6 +116,34 @@ function createContextDb(): Database {
     initializeDatabase(db);
     return db;
 }
+
+describe("raw-history eligibility", () => {
+    it("uses absolute raw ordinals rather than slice length for provider-backed tails", () => {
+        const sessionId = "pi-native-compacted";
+        const db = createContextDb();
+        db.prepare(
+            "INSERT INTO compartments (session_id, sequence, start_message, end_message, title, content, created_at) VALUES (?, 0, 1, 1855, 'covered', 'covered', ?)",
+        ).run(sessionId, Date.now());
+
+        const eligibility = withRawMessageProvider(
+            sessionId,
+            {
+                readMessages: () => [
+                    { ordinal: 1856, id: "live-u", role: "user", parts: [] },
+                    { ordinal: 1857, id: "live-a", role: "assistant", parts: [] },
+                ],
+            },
+            () => getRawHistoryEligibility(db, sessionId),
+        );
+
+        expect(eligibility).toMatchObject({
+            offset: 1856,
+            rawMessageCount: 1857,
+            hasRawBeyondLastCompartment: true,
+        });
+        closeQuietly(db);
+    });
+});
 
 describe("protected-tail boundary integration", () => {
     it("exposes a runnable head for a sparse #132-shaped session under pressure", () => {
