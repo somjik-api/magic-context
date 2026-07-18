@@ -9,6 +9,8 @@ import { closeQuietly } from "@magic-context/core/shared/sqlite-helpers";
 import { createTestDb, fakeContext } from "../test-utils.test";
 import { createCtxMemoryTool } from "./ctx-memory";
 
+const LIST_PAGE_CHAR_BUDGET = 24_000;
+
 describe("createCtxMemoryTool", () => {
 	it("rejects list for primary agents and allows it for dreamer agents", async () => {
 		const db = createTestDb();
@@ -862,6 +864,145 @@ describe("createCtxMemoryTool", () => {
 			);
 			expect(getMemoryById(db, archived.id)?.status).toBe("active");
 			expect(getMemoryById(db, active.id)?.status).toBe("archived");
+		} finally {
+			closeQuietly(db);
+		}
+	});
+
+	it("paginates list with offset and a char-budget cap so it never overflows", async () => {
+		const db = createTestDb();
+		try {
+			const dreamer = createCtxMemoryTool({
+				db,
+				memoryEnabled: true,
+				embeddingEnabled: false,
+				allowDreamerActions: true,
+			});
+			const ctx = fakeContext("ses-memory") as never;
+			const signal = new AbortController().signal;
+
+			// Write 60 large memories (~600 chars each ≈ 36KB) — above the
+			// page char budget, so a single list call must page.
+			const big = "X".repeat(600);
+			for (let i = 0; i < 60; i++) {
+				await dreamer.execute(
+					"w",
+					{
+						action: "write",
+						category: "CONSTRAINTS",
+						content: `mem ${i} ${big}`,
+					},
+					signal,
+					undefined,
+					ctx,
+				);
+			}
+
+			const page1 = await dreamer.execute(
+				"l1",
+				{ action: "list", limit: 100000 },
+				signal,
+				undefined,
+				ctx,
+			);
+			const text1 = page1.content[0]?.text ?? "";
+			expect(text1.length).toBeLessThanOrEqual(LIST_PAGE_CHAR_BUDGET);
+			expect(text1).toContain("of 60 total");
+			expect(text1).toContain("more.");
+			expect(text1).toContain("offset=");
+
+			// Offset past the end yields a graceful message, not a crash.
+			const beyond = await dreamer.execute(
+				"l2",
+				{ action: "list", offset: 1000 },
+				signal,
+				undefined,
+				ctx,
+			);
+			expect(beyond.content[0]?.text).toContain("use a smaller offset");
+		} finally {
+			closeQuietly(db);
+		}
+	});
+
+	it("preserves a category filter in the exact next-page call", async () => {
+		const db = createTestDb();
+		try {
+			const dreamer = createCtxMemoryTool({
+				db,
+				memoryEnabled: true,
+				embeddingEnabled: false,
+				allowDreamerActions: true,
+			});
+			const ctx = fakeContext("ses-memory") as never;
+			const projectIdentity = resolveProjectIdentity(
+				(ctx as { cwd: string }).cwd,
+			);
+			for (let i = 0; i < 3; i++) {
+				insertMemory(db, {
+					projectPath: projectIdentity,
+					category: "CONSTRAINTS",
+					content: `Constraint ${i}.`,
+				});
+			}
+			insertMemory(db, {
+				projectPath: projectIdentity,
+				category: "ARCHITECTURE",
+				content: "Unrelated architecture.",
+			});
+
+			const result = await dreamer.execute(
+				"l-category",
+				{ action: "list", category: "CONSTRAINTS", limit: 1 },
+				new AbortController().signal,
+				undefined,
+				ctx,
+			);
+			const text = result.content[0]?.text ?? "";
+
+			expect(text).toContain("Showing memories 1-1 of 3 total");
+			expect(text).toContain(
+				'ctx_memory(action="list", category="CONSTRAINTS", offset=1, limit=1)',
+			);
+		} finally {
+			closeQuietly(db);
+		}
+	});
+
+	it("truncates one oversized memory to the hard page budget", async () => {
+		const db = createTestDb();
+		try {
+			const dreamer = createCtxMemoryTool({
+				db,
+				memoryEnabled: true,
+				embeddingEnabled: false,
+				allowDreamerActions: true,
+			});
+			const result = await dreamer.execute(
+				"l-oversized",
+				{
+					action: "write",
+					category: "CONSTRAINTS",
+					content: "Y".repeat(LIST_PAGE_CHAR_BUDGET * 2),
+				},
+				new AbortController().signal,
+				undefined,
+				fakeContext("ses-memory") as never,
+			);
+			expect(result.isError).toBeUndefined();
+
+			const page = await dreamer.execute(
+				"l-list-oversized",
+				{ action: "list", limit: 1 },
+				new AbortController().signal,
+				undefined,
+				fakeContext("ses-memory") as never,
+			);
+			const text = page.content[0]?.text ?? "";
+
+			expect(text.length).toBeLessThanOrEqual(LIST_PAGE_CHAR_BUDGET);
+			expect(text).toContain("content truncated to fit page budget");
+			expect(text).toContain("Showing memories 1-1 of 1 total");
 		} finally {
 			closeQuietly(db);
 		}

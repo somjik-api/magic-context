@@ -28,6 +28,7 @@ import type {
 } from "../../features/magic-context/memory/embedding-provider";
 import { Database } from "../../shared/sqlite";
 import { closeQuietly } from "../../shared/sqlite-helpers";
+import { LIST_PAGE_CHAR_BUDGET } from "./constants";
 
 const { createCtxMemoryTools } = await import("./tools");
 
@@ -679,10 +680,101 @@ describe("createCtxMemoryTools", () => {
                 toolContext("ses-dreamer", DREAMER_AGENT),
             );
 
-            expect(result).toContain("Found 2 active memories");
+            expect(result).toContain("of 2 total");
             expect(result).toContain("CATEGORY");
             expect(result).toContain("Always run bun test before shipping.");
             expect(result).toContain("Do not use npm in this repo.");
+        });
+
+        it("paginates with offset and surfaces a next-page footer", async () => {
+            for (let i = 0; i < 5; i++) {
+                insertMemory(db, {
+                    projectPath: "/repo/project",
+                    category: "ARCHITECTURE",
+                    content: `Memory number ${i} content.`,
+                });
+            }
+
+            const page1 = await tools.ctx_memory.execute(
+                { action: "list", limit: 2, offset: 0 },
+                toolContext("ses-dreamer", DREAMER_AGENT),
+            );
+            expect(page1).toContain("Showing memories 1-2 of 5 total");
+            expect(page1).toContain("3 more");
+            expect(page1).toContain("offset=2");
+
+            const page3 = await tools.ctx_memory.execute(
+                { action: "list", limit: 2, offset: 4 },
+                toolContext("ses-dreamer", DREAMER_AGENT),
+            );
+            expect(page3).toContain("Showing memories 5-5 of 5 total");
+            expect(page3).not.toContain("more.");
+        });
+
+        it("preserves a category filter in the exact next-page call", async () => {
+            for (let i = 0; i < 3; i++) {
+                insertMemory(db, {
+                    projectPath: "/repo/project",
+                    category: "CONSTRAINTS",
+                    content: `Constraint ${i}.`,
+                });
+            }
+            insertMemory(db, {
+                projectPath: "/repo/project",
+                category: "ARCHITECTURE",
+                content: "Unrelated architecture.",
+            });
+
+            const result = await tools.ctx_memory.execute(
+                { action: "list", category: "CONSTRAINTS", limit: 1 },
+                toolContext("ses-dreamer", DREAMER_AGENT),
+            );
+
+            expect(result).toContain("Showing memories 1-1 of 3 total");
+            expect(result).toContain(
+                'ctx_memory(action="list", category="CONSTRAINTS", offset=1, limit=1)',
+            );
+        });
+
+        it("caps a single page by char budget so it never overflows", async () => {
+            // 200 large memories (~600 chars each = ~120KB) — far above the
+            // page char budget. A single list call must return a bounded page
+            // and tell the caller to paginate, never dump everything.
+            const big = "X".repeat(600);
+            for (let i = 0; i < 200; i++) {
+                insertMemory(db, {
+                    projectPath: "/repo/project",
+                    category: "CONSTRAINTS",
+                    content: `${i} ${big}`,
+                });
+            }
+
+            const result = await tools.ctx_memory.execute(
+                { action: "list", limit: 100000 },
+                toolContext("ses-dreamer", DREAMER_AGENT),
+            );
+
+            expect(result.length).toBeLessThanOrEqual(LIST_PAGE_CHAR_BUDGET);
+            expect(result).toContain("of 200 total");
+            expect(result).toContain("more.");
+            expect(result).toContain("offset=");
+        });
+
+        it("truncates one oversized memory to the hard page budget", async () => {
+            insertMemory(db, {
+                projectPath: "/repo/project",
+                category: "CONSTRAINTS",
+                content: "Y".repeat(LIST_PAGE_CHAR_BUDGET * 2),
+            });
+
+            const result = await tools.ctx_memory.execute(
+                { action: "list", limit: 1 },
+                toolContext("ses-dreamer", DREAMER_AGENT),
+            );
+
+            expect(result.length).toBeLessThanOrEqual(LIST_PAGE_CHAR_BUDGET);
+            expect(result).toContain("content truncated to fit page budget");
+            expect(result).toContain("Showing memories 1-1 of 1 total");
         });
     });
 
@@ -1577,7 +1669,7 @@ describe("createCtxMemoryTools", () => {
                 toolContext("ses-dream", "dreamer"),
             );
 
-            expect(result).toContain("Found 1 active memory");
+            expect(result).toContain("of 1 total");
         });
     });
 
