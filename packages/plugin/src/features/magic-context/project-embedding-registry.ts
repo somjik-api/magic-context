@@ -107,6 +107,17 @@ export interface EmbeddingFeatures {
     gitCommitEnabled: boolean;
 }
 
+export interface ProjectEmbeddingRegistrationOptions {
+    /**
+     * When true (default), registration owns durable startup writes: active
+     * identity tracking, stale-vector wipes, historical chunk-project repair,
+     * and descriptor persistence. Short-lived subagent processes should set
+     * this false: they need a process-local embedding snapshot/provider for
+     * ctx_search, but must not contend on global writers during parallel startup.
+     */
+    maintenance?: boolean;
+}
+
 export interface ProjectEmbeddingRegistrationSnapshot {
     projectIdentity: string;
     sourceDirectory: string;
@@ -941,6 +952,7 @@ export function registerProjectEmbedding(
     config: EmbeddingConfig,
     features: EmbeddingFeatures,
     sourceDirectory: string,
+    options: ProjectEmbeddingRegistrationOptions = {},
 ): ProjectEmbeddingRegistrationSnapshot {
     const resolvedConfig = resolveEmbeddingConfig(config);
     const providerIdentity = getEmbeddingProviderIdentity(resolvedConfig);
@@ -952,10 +964,20 @@ export function registerProjectEmbedding(
         !prior.observationMode &&
         prior.runtimeFingerprint === runtimeFingerprint &&
         prior.providerIdentity === providerIdentity;
-    recordActiveEmbeddingIdentity(db, projectIdentity, providerIdentity, chunkModelId, features);
-    // A trusted registration just landed — clear any prior untrusted-load latch
-    // so GC can resume for this project.
-    untrustedLoadProjects.delete(projectIdentity);
+    if (options.maintenance !== false) {
+        recordActiveEmbeddingIdentity(
+            db,
+            projectIdentity,
+            providerIdentity,
+            chunkModelId,
+            features,
+        );
+        // A trusted registration just landed — clear any prior untrusted-load latch
+        // so GC can resume for this project. Snapshot-only subagent registration
+        // is process-local and deliberately does not mutate maintenance state.
+        untrustedLoadProjects.delete(projectIdentity);
+    }
+
     const generationChanged =
         prior === undefined ||
         prior.observationMode ||
@@ -978,7 +1000,9 @@ export function registerProjectEmbedding(
     };
 
     projectRegistrations.set(projectIdentity, registration);
-    persistPrimaryDescriptor(db, registration);
+    if (options.maintenance !== false) {
+        persistPrimaryDescriptor(db, registration);
+    }
 
     if (!canReuseProvider) {
         disposeProvider(prior?.provider ?? null);

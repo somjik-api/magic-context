@@ -5,6 +5,7 @@ import {
 } from "@magic-context/core/config/migrate-config-location";
 import {
 	type EmbeddingFeatures,
+	type ProjectEmbeddingRegistrationOptions,
 	registerProjectEmbedding,
 } from "@magic-context/core/features/magic-context/memory/embedding";
 import { resolveProjectIdentity } from "@magic-context/core/features/magic-context/memory/project-identity";
@@ -53,9 +54,10 @@ function configFingerprint(paths: readonly string[]): string {
 		.join("|");
 }
 
-export async function ensureProjectRegisteredFromPiDirectory(
+async function ensureProjectRegisteredFromPiDirectoryWithOptions(
 	directory: string,
 	db: ContextDatabase,
+	options: ProjectEmbeddingRegistrationOptions,
 ): Promise<void> {
 	const projectIdentity = resolveProjectIdentity(directory);
 	let registrationFingerprints = registrationFingerprintsByDatabase.get(db);
@@ -82,6 +84,7 @@ export async function ensureProjectRegisteredFromPiDirectory(
 		detailed.config.embedding,
 		features,
 		directory,
+		options,
 	);
 	const fingerprintPaths = configCandidatePaths(
 		directory,
@@ -90,5 +93,23 @@ export async function ensureProjectRegisteredFromPiDirectory(
 	registrationFingerprints.set(projectIdentity, {
 		paths: fingerprintPaths,
 		fingerprint: configFingerprint(fingerprintPaths),
+	});
+}
+
+export async function ensureProjectRegisteredFromPiDirectory(
+	directory: string,
+	db: ContextDatabase,
+): Promise<void> {
+	await ensureProjectRegisteredFromPiDirectoryWithOptions(directory, db, {
+		maintenance: true,
+	});
+}
+
+export async function ensureProjectEmbeddingSnapshotFromPiDirectory(
+	directory: string,
+	db: ContextDatabase,
+): Promise<void> {
+	await ensureProjectRegisteredFromPiDirectoryWithOptions(directory, db, {
+		maintenance: false,
 	});
 }
