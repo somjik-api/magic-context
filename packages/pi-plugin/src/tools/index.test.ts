@@ -64,7 +64,15 @@ describe("registerMagicContextTools", () => {
 
 			const expectedFields: Record<string, string[]> = {
 				ctx_search: ["query", "limit", "sources"],
-				ctx_memory: ["action", "content", "category", "ids", "limit", "reason"],
+				ctx_memory: [
+					"action",
+					"content",
+					"category",
+					"ids",
+					"limit",
+					"offset",
+					"reason",
+				],
 				ctx_note: [
 					"action",
 					"content",

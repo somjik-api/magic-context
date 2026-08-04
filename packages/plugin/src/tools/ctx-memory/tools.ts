@@ -47,7 +47,8 @@ import {
 } from "../../plugin/rust-tool-backends";
 import { sessionLog } from "../../shared/logger";
 import { unwrapImitatedReducedArgs } from "../unwrap-imitated-reduced-args";
-import { CTX_MEMORY_DESCRIPTION, CTX_MEMORY_TOOL_NAME, DEFAULT_SEARCH_LIMIT } from "./constants";
+import { CTX_MEMORY_DESCRIPTION, CTX_MEMORY_TOOL_NAME, DEFAULT_LIST_LIMIT } from "./constants";
+import { formatMemoryList, formatMemoryTable } from "./format-memory-list";
 import {
     CTX_MEMORY_ACTIONS,
     CTX_MEMORY_DREAMER_ACTIONS,
@@ -65,10 +66,18 @@ function isMemoryCategory(value: string): value is MemoryCategory {
 
 function normalizeLimit(limit?: number): number {
     if (typeof limit !== "number" || !Number.isFinite(limit)) {
-        return DEFAULT_SEARCH_LIMIT;
+        return DEFAULT_LIST_LIMIT;
     }
 
     return Math.max(1, Math.floor(limit));
+}
+
+function normalizeOffset(offset?: number): number {
+    if (typeof offset !== "number" || !Number.isFinite(offset)) {
+        return 0;
+    }
+
+    return Math.max(0, Math.floor(offset));
 }
 
 // When a caller omits `allowedActions`, fall back
@@ -121,63 +130,6 @@ function moduleMemoryText(response: unknown): string | null {
     return null;
 }
 
-function formatMemoryList(memories: Memory[]): string {
-    if (memories.length === 0) {
-        return "No active memories found.";
-    }
-
-    const rows = memories.map((memory) => ({
-        id: String(memory.id),
-        category: memory.category,
-        status: memory.status,
-        verification: memory.verificationStatus,
-        updated: new Date(memory.updatedAt).toISOString(),
-        content: memory.content.replace(/\s+/g, " ").trim(),
-    }));
-    const headers = {
-        id: "ID",
-        category: "CATEGORY",
-        status: "STATUS",
-        verification: "VERIFY",
-        updated: "UPDATED",
-        content: "CONTENT",
-    };
-    const widths = {
-        id: Math.max(headers.id.length, ...rows.map((row) => row.id.length)),
-        category: Math.max(headers.category.length, ...rows.map((row) => row.category.length)),
-        status: Math.max(headers.status.length, ...rows.map((row) => row.status.length)),
-        verification: Math.max(
-            headers.verification.length,
-            ...rows.map((row) => row.verification.length),
-        ),
-        updated: Math.max(headers.updated.length, ...rows.map((row) => row.updated.length)),
-    };
-    const formatRow = (row: (typeof rows)[number] | typeof headers) =>
-        [
-            row.id.padEnd(widths.id),
-            row.category.padEnd(widths.category),
-            row.status.padEnd(widths.status),
-            row.verification.padEnd(widths.verification),
-            row.updated.padEnd(widths.updated),
-            row.content,
-        ].join(" | ");
-
-    return [
-        `Found ${rows.length} active ${rows.length === 1 ? "memory" : "memories"}:`,
-        "",
-        formatRow(headers),
-        [
-            "-".repeat(widths.id),
-            "-".repeat(widths.category),
-            "-".repeat(widths.status),
-            "-".repeat(widths.verification),
-            "-".repeat(widths.updated),
-            "-------",
-        ].join("-+-"),
-        ...rows.map(formatRow),
-    ].join("\n");
-}
-
 function filterByCategory(memories: Memory[], category?: string): Memory[] {
     if (!category) {
         return memories;
@@ -206,7 +158,7 @@ function formatGetOutput(args: {
         if (!memory) {
             parts.push(GET_NOT_VISIBLE_MESSAGE(id));
         } else {
-            parts.push(formatMemoryList([memory]));
+            parts.push(formatMemoryTable([memory]));
         }
     }
     return parts.join("\n\n");
@@ -362,7 +314,11 @@ const ctxMemoryArgsShape = {
         .describe(
             "Target memory id(s) from <project-memory>: update takes exactly one, archive one or more, merge two or more, get one to twenty",
         ),
-    limit: tool.schema.number().optional().describe("Max results for list (default: 10)"),
+    limit: tool.schema.number().optional().describe("Max results for list (default: 100)"),
+    offset: tool.schema
+        .number()
+        .optional()
+        .describe("Skip this many newest memories for list pagination (default: 0)"),
     reason: tool.schema
         .string()
         .optional()
@@ -385,6 +341,7 @@ function createCtxMemoryTool(deps: CtxMemoryToolDeps): ToolDefinition {
                 category: { type: "enum", values: V2_MEMORY_CATEGORIES },
                 ids: { type: "array", items: "number", maxItems: 100 },
                 limit: "number",
+                offset: "number",
                 reason: "string",
             });
             // Sidekick consumes untrusted `/ctx-aug` prompt text and is retrieval-only;
@@ -578,13 +535,19 @@ function createCtxMemoryTool(deps: CtxMemoryToolDeps): ToolDefinition {
 
             if (args.action === "list") {
                 const limit = normalizeLimit(args.limit);
+                const offset = normalizeOffset(args.offset);
                 const category = normalizeCategory(args.category);
                 const memories = filterByCategory(
                     getMemoriesByProject(deps.db, projectPath),
                     category,
-                ).slice(0, limit);
+                );
 
-                return formatMemoryList(memories);
+                return formatMemoryList({
+                    pageMemories: memories.slice(offset, offset + limit),
+                    totalCount: memories.length,
+                    offset,
+                    category,
+                });
             }
 
             if (args.action === "get") {

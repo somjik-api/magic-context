@@ -34,6 +34,7 @@ export interface CtxMemoryArgs extends ImitatedReducedArgs {
      */
     ids?: number[];
     limit?: number;
+    offset?: number;
     reason?: string;
 }
 

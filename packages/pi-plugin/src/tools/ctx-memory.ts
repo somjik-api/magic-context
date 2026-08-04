@@ -74,12 +74,17 @@ import {
 	storedPathBelongsToWorkspace,
 } from "@magic-context/core/features/magic-context/workspaces";
 import { log } from "@magic-context/core/shared/logger";
-import { CTX_MEMORY_DESCRIPTION } from "@magic-context/core/tools/ctx-memory/constants";
+import {
+	CTX_MEMORY_DESCRIPTION,
+	DEFAULT_LIST_LIMIT,
+} from "@magic-context/core/tools/ctx-memory/constants";
+import {
+	formatMemoryList,
+	formatMemoryTable,
+} from "@magic-context/core/tools/ctx-memory/format-memory-list";
 import { runImmediateTransaction } from "@magic-context/core/tools/ctx-memory/verification-recording";
 import { unwrapImitatedReducedArgs } from "@magic-context/core/tools/unwrap-imitated-reduced-args";
 import { type Static, Type } from "typebox";
-
-const DEFAULT_LIST_LIMIT = 10;
 
 // Mirrors OpenCode CTX_MEMORY_DREAMER_ACTIONS. `delete` was removed — it was an
 // exact alias of `archive` (both soft-archive); `archive` is the single
@@ -139,7 +144,13 @@ const ParamsSchema = Type.Object(
 		),
 		limit: Type.Optional(
 			Type.Number({
-				description: "Max results for list (default: 10)",
+				description: "Max results for list (default: 100)",
+			}),
+		),
+		offset: Type.Optional(
+			Type.Number({
+				description:
+					"Skip this many newest memories for list pagination (default: 0)",
 			}),
 		),
 		reason: Type.Optional(
@@ -171,67 +182,9 @@ function normalizeLimit(limit?: number): number {
 	return Math.max(1, Math.floor(limit));
 }
 
-function formatMemoryList(memories: Memory[]): string {
-	if (memories.length === 0) return "No active memories found.";
-
-	const rows = memories.map((m) => ({
-		id: String(m.id),
-		category: m.category,
-		status: m.status,
-		verification: m.verificationStatus,
-		updated: new Date(m.updatedAt).toISOString(),
-		content: m.content.replace(/\s+/g, " ").trim(),
-	}));
-	const headers = {
-		id: "ID",
-		category: "CATEGORY",
-		status: "STATUS",
-		verification: "VERIFY",
-		updated: "UPDATED",
-		content: "CONTENT",
-	};
-	const widths = {
-		id: Math.max(headers.id.length, ...rows.map((r) => r.id.length)),
-		category: Math.max(
-			headers.category.length,
-			...rows.map((r) => r.category.length),
-		),
-		status: Math.max(
-			headers.status.length,
-			...rows.map((r) => r.status.length),
-		),
-		verification: Math.max(
-			headers.verification.length,
-			...rows.map((r) => r.verification.length),
-		),
-		updated: Math.max(
-			headers.updated.length,
-			...rows.map((r) => r.updated.length),
-		),
-	};
-	const fmt = (r: (typeof rows)[number] | typeof headers) =>
-		[
-			r.id.padEnd(widths.id),
-			r.category.padEnd(widths.category),
-			r.status.padEnd(widths.status),
-			r.verification.padEnd(widths.verification),
-			r.updated.padEnd(widths.updated),
-			r.content,
-		].join(" | ");
-	return [
-		`Found ${rows.length} active ${rows.length === 1 ? "memory" : "memories"}:`,
-		"",
-		fmt(headers),
-		[
-			"-".repeat(widths.id),
-			"-".repeat(widths.category),
-			"-".repeat(widths.status),
-			"-".repeat(widths.verification),
-			"-".repeat(widths.updated),
-			"-------",
-		].join("-+-"),
-		...rows.map(fmt),
-	].join("\n");
+function normalizeOffset(offset?: number): number {
+	if (typeof offset !== "number" || !Number.isFinite(offset)) return 0;
+	return Math.max(0, Math.floor(offset));
 }
 
 function isPrimaryMutableMemory(memory: Memory): boolean {
@@ -266,7 +219,7 @@ function formatGetOutput(args: {
 		if (!memory) {
 			parts.push(getNotVisibleMessage(id));
 		} else {
-			parts.push(formatMemoryList([memory]));
+			parts.push(formatMemoryTable([memory]));
 		}
 	}
 	return parts.join("\n\n");
@@ -369,6 +322,7 @@ export function createCtxMemoryTool(
 				category: { type: "enum", values: V2_MEMORY_CATEGORIES },
 				ids: { type: "array", items: "number", maxItems: 100 },
 				limit: "number",
+				offset: "number",
 				reason: "string",
 			});
 			if (params.action === undefined) {
@@ -502,12 +456,20 @@ export function createCtxMemoryTool(
 
 			if (params.action === "list") {
 				const limit = normalizeLimit(params.limit);
+				const offset = normalizeOffset(params.offset);
 				const filtered = getMemoriesByProject(deps.db, projectIdentity);
 				const category = params.category;
 				const filtered2 = category
 					? filtered.filter((m) => m.category === category)
 					: filtered;
-				return ok(formatMemoryList(filtered2.slice(0, limit)));
+				return ok(
+					formatMemoryList({
+						pageMemories: filtered2.slice(offset, offset + limit),
+						totalCount: filtered2.length,
+						offset,
+						category,
+					}),
+				);
 			}
 
 			if (params.action === "get") {
