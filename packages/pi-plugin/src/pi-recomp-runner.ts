@@ -1,6 +1,6 @@
 import {
 	type RawMessageProvider,
-	setRawMessageProvider,
+	withRawMessageProvider,
 } from "@magic-context/core/hooks/magic-context/read-session-chunk";
 import { sessionLog } from "@magic-context/core/shared/logger";
 import { setMagicContextRecompActive } from "./status-line";
@@ -45,10 +45,10 @@ export async function awaitInFlightRecomps(): Promise<void> {
  * (the recomp call, the published gate, marker staging, migration, and the
  * status messages it sends) and must not throw uncaught — failures are logged.
  *
- * The provider unregister is closure-guarded (setRawMessageProvider only deletes
- * if the slot still holds THIS provider), so a concurrent user turn that
- * re-registers its own provider for the same session is not clobbered on
- * cleanup.
+ * The provider is async-scoped to the detached run. A concurrent context pass
+ * may replace the session's process-global provider, but recomp reads keep the
+ * full-history provider inherited by this async chain; cleanup never clobbers
+ * the newer context provider.
  */
 export function spawnPiRecompRun(args: {
 	sessionId: string;
@@ -57,10 +57,9 @@ export function spawnPiRecompRun(args: {
 	work: () => Promise<void>;
 }): void {
 	const { sessionId, provider, onStatusChange, work } = args;
-	const unregister = setRawMessageProvider(sessionId, provider);
 	setMagicContextRecompActive(sessionId, true);
 	onStatusChange();
-	const runPromise = (async () => {
+	const runPromise = withRawMessageProvider(sessionId, provider, async () => {
 		try {
 			await work();
 		} catch (err) {
@@ -69,10 +68,9 @@ export function spawnPiRecompRun(args: {
 				`pi recomp run failed (detached): ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
-	})().finally(() => {
+	}).finally(() => {
 		inFlightRecomp.delete(sessionId);
 		setMagicContextRecompActive(sessionId, false);
-		unregister();
 		onStatusChange();
 	});
 	inFlightRecomp.set(sessionId, runPromise);

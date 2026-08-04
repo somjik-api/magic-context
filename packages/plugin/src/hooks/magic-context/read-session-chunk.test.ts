@@ -10,8 +10,17 @@ import { validateHistorianOutput } from "./compartment-runner-validation";
 import {
     getProtectedTailStartOrdinal,
     getRawSessionMessageIdsThrough,
+    getRawSessionMessageOrdinalCount,
+    getRawSessionStoredMessageCount,
+    readRawSessionMessageIdOrdinals,
+    readRawSessionMessageOrdinalById,
+    readRawSessionMessageOrdinalPage,
+    readRawSessionMessagePage,
+    readRawSessionMessagePartsById,
     readRawSessionMessages,
     readSessionChunk,
+    setRawMessageProvider,
+    withRawMessageProvider,
     withRawSessionMessageCache,
 } from "./read-session-chunk";
 
@@ -189,6 +198,151 @@ describe("readSessionChunk", () => {
         expect(chunk.text).toContain("[2-3] A: done");
         expect(chunk.text).not.toContain("msg_");
         expect(chunk.text).not.toContain("tool call");
+    });
+
+    it("uses absolute provider ordinals when reporting token-capped remaining history", () => {
+        const sessionId = "ses-provider-absolute";
+        const largeText = "X".repeat(10_000);
+        const cleanup = setRawMessageProvider(sessionId, {
+            readMessages: () => [
+                {
+                    ordinal: 1_856,
+                    id: "p-1856",
+                    role: "user",
+                    parts: [{ type: "text", text: largeText }],
+                },
+                {
+                    ordinal: 1_857,
+                    id: "p-1857",
+                    role: "assistant",
+                    parts: [{ type: "text", text: largeText }],
+                },
+                {
+                    ordinal: 1_858,
+                    id: "p-1858",
+                    role: "user",
+                    parts: [{ type: "text", text: largeText }],
+                },
+            ],
+        });
+
+        try {
+            const chunk = readSessionChunk(sessionId, 1, 1_856);
+
+            expect(chunk.endIndex).toBe(1_856);
+            expect(chunk.messageCount).toBe(1);
+            expect(chunk.hasMore).toBe(true);
+        } finally {
+            cleanup();
+        }
+    });
+
+    it("keeps an async-scoped provider stable when a concurrent pass replaces the global provider", async () => {
+        const sessionId = "ses-provider-concurrent";
+        const fullMessages = [
+            {
+                ordinal: 1,
+                id: "full-1",
+                role: "user" as const,
+                parts: [{ type: "text" as const, text: "full" }],
+            },
+        ];
+        const suffixMessages = [
+            {
+                ordinal: 2,
+                id: "suffix-2",
+                role: "user" as const,
+                parts: [{ type: "text" as const, text: "suffix" }],
+            },
+        ];
+        let unregisterSuffix: (() => void) | undefined;
+
+        await withRawMessageProvider(sessionId, { readMessages: () => fullMessages }, async () => {
+            await Promise.resolve();
+            unregisterSuffix = setRawMessageProvider(sessionId, {
+                readMessages: () => suffixMessages,
+            });
+            expect(readRawSessionMessages(sessionId)).toEqual(fullMessages);
+        });
+
+        expect(readRawSessionMessages(sessionId)).toEqual(suffixMessages);
+        unregisterSuffix?.();
+    });
+
+    it("keeps every async provider accessor on the scoped provider after global replacement", async () => {
+        const sessionId = "ses-provider-accessors";
+        const fullMessages = [
+            {
+                ordinal: 1_856,
+                id: "full-1856",
+                role: "user" as const,
+                parts: [{ type: "text" as const, text: "full" }],
+            },
+            {
+                ordinal: 1_857,
+                id: "full-1857",
+                role: "assistant" as const,
+                parts: [{ type: "text" as const, text: "history" }],
+            },
+        ];
+        const fullOrdinalPage = [
+            {
+                id: "full-1856",
+                timeCreated: 1_856,
+                contributesOrdinal: true,
+                hasValidInfo: true,
+            },
+        ];
+        let unregisterReplacement: (() => void) | undefined;
+
+        await withRawMessageProvider(
+            sessionId,
+            {
+                readMessages: () => fullMessages,
+                readMessagePage: () => fullMessages,
+                readMessagePartsById: () => fullMessages[0] ?? null,
+                readMessageOrdinalById: () => 1_856,
+                readMessageIdOrdinals: () => new Map([["full-1856", 1_856]]),
+                readMessageOrdinalPage: () => fullOrdinalPage,
+                getStoredMessageCount: () => 41,
+            },
+            async () => {
+                await Promise.resolve();
+                unregisterReplacement = setRawMessageProvider(sessionId, {
+                    readMessages: () => [
+                        {
+                            ordinal: 9_999,
+                            id: "replacement",
+                            role: "user",
+                            parts: [{ type: "text", text: "replacement" }],
+                        },
+                    ],
+                    readMessagePage: () => [],
+                    readMessagePartsById: () => null,
+                    readMessageOrdinalById: () => 9_999,
+                    readMessageIdOrdinals: () => new Map([["replacement", 9_999]]),
+                    readMessageOrdinalPage: () => [],
+                    getMessageCount: () => 9_999,
+                    getStoredMessageCount: () => 1,
+                });
+
+                expect(readRawSessionMessagePage(sessionId, 0, 10, 2_000)).toEqual(fullMessages);
+                expect(getRawSessionMessageOrdinalCount(sessionId)).toBe(1_857);
+                expect(readRawSessionMessageOrdinalPage(sessionId, null, 10)).toEqual(
+                    fullOrdinalPage,
+                );
+                expect(getRawSessionStoredMessageCount(sessionId)).toBe(41);
+                expect(readRawSessionMessageIdOrdinals(sessionId)).toEqual(
+                    new Map([["full-1856", 1_856]]),
+                );
+                expect(readRawSessionMessagePartsById(sessionId, "full-1856")).toEqual(
+                    fullMessages[0],
+                );
+                expect(readRawSessionMessageOrdinalById(sessionId, "full-1856")).toBe(1_856);
+            },
+        );
+
+        unregisterReplacement?.();
     });
 
     it("reuses cached raw messages within nested cache scopes and clears afterward", () => {

@@ -24,7 +24,7 @@ import { ensureProjectRegisteredFromPiDirectory } from "../embedding-bootstrap";
 import { createPiHistorianClient } from "../pi-recomp-client-shared";
 import { stagePiRecompMarker } from "../pi-recomp-marker";
 import { isPiRecompInFlight, spawnPiRecompRun } from "../pi-recomp-runner";
-import { readPiSessionMessages } from "../read-session-pi";
+import { readFullPiSessionMessages } from "../read-session-pi";
 import { updateStatusLine } from "../status-line";
 import { resolveSessionId, sendCtxStatusMessage } from "./pi-command-utils";
 
@@ -162,7 +162,7 @@ export function registerCtxRecompCommand(
 			});
 
 			const provider = {
-				readMessages: () => readPiSessionMessages(ctx),
+				readMessages: () => readFullPiSessionMessages(ctx),
 			} satisfies RawMessageProvider;
 
 			// Detached: the recomp runs in the background so the Pi REPL stays

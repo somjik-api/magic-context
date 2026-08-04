@@ -2,10 +2,14 @@
 
 import { describe, expect, it } from "bun:test";
 import { findFirstKeptEntryId } from "./pi-historian-runner";
+import * as readSessionPi from "./read-session-pi";
 import {
+	convertActiveEntriesToRawMessages,
 	convertEntriesToRawMessages,
 	findLastModelKeyFromBranch,
 	isMidTurnPi,
+	readPiSessionMessages,
+	sliceEntriesFromLatestCompaction,
 } from "./read-session-pi";
 
 describe("isMidTurnPi", () => {
@@ -388,6 +392,175 @@ describe("convertEntriesToRawMessages: synthetic-user entry-id propagation", () 
 	});
 });
 
+describe("Pi native compaction-aware raw history", () => {
+	function messageEntry(
+		id: string,
+		message: Record<string, unknown>,
+	): Record<string, unknown> {
+		return { type: "message", id, message };
+	}
+
+	it("keeps full root history when a native compaction lacks absolute ordinal metadata", () => {
+		const entries = [
+			messageEntry("old-u", { role: "user", content: "old" }),
+			messageEntry("old-a", { role: "assistant", content: [] }),
+			messageEntry("live-u", { role: "user", content: "live" }),
+			messageEntry("live-a", { role: "assistant", content: [] }),
+			{ type: "compaction", firstKeptEntryId: "live-u" },
+			messageEntry("live-u2", { role: "user", content: "new" }),
+		];
+
+		// A plain Pi compaction has no durable bridge into Magic Context's
+		// compartment ordinal space. Starting the kept suffix at ordinal 1 would
+		// silently create a second epoch and can strand existing compartments;
+		// starting it at the root-relative kept ordinal would make a fresh
+		// compartment sequence begin above 1. Until an MC marker supplies the
+		// absolute boundary, keep the complete branch and its 1-based ordinals.
+		expect(sliceEntriesFromLatestCompaction(entries)).toEqual(entries);
+		expect(
+			convertActiveEntriesToRawMessages(entries).map((m) => ({
+				ordinal: m.ordinal,
+				id: m.id,
+				role: m.role,
+			})),
+		).toEqual([
+			{ ordinal: 1, id: "old-u", role: "user" },
+			{ ordinal: 2, id: "old-a", role: "assistant" },
+			{ ordinal: 3, id: "live-u", role: "user" },
+			{ ordinal: 4, id: "live-a", role: "assistant" },
+			{ ordinal: 5, id: "live-u2", role: "user" },
+		]);
+	});
+
+	it("preserves Magic Context ordinals after a native compaction marker", () => {
+		const entries = [
+			messageEntry("old-u", { role: "user", content: "old" }),
+			messageEntry("old-a", { role: "assistant", content: [] }),
+			messageEntry("live-u", { role: "user", content: "live" }),
+			messageEntry("live-a", { role: "assistant", content: [] }),
+			{
+				type: "compaction",
+				firstKeptEntryId: "live-u",
+				details: { source: "magic-context", lastCompactedOrdinal: 1855 },
+			},
+			messageEntry("live-u2", { role: "user", content: "new" }),
+		];
+
+		expect(
+			convertActiveEntriesToRawMessages(entries).map((m) => ({
+				ordinal: m.ordinal,
+				id: m.id,
+				role: m.role,
+			})),
+		).toEqual([
+			{ ordinal: 1856, id: "live-u", role: "user" },
+			{ ordinal: 1857, id: "live-a", role: "assistant" },
+			{ ordinal: 1858, id: "live-u2", role: "user" },
+		]);
+	});
+
+	for (const [label, details] of [
+		["negative ordinal", { source: "magic-context", lastCompactedOrdinal: -1 }],
+		[
+			"fractional ordinal",
+			{ source: "magic-context", lastCompactedOrdinal: 1.5 },
+		],
+		[
+			"unsafe ordinal",
+			{
+				source: "magic-context",
+				lastCompactedOrdinal: Number.MAX_SAFE_INTEGER + 1,
+			},
+		],
+		[
+			"non-Magic-Context source",
+			{ source: "other-extension", lastCompactedOrdinal: 2 },
+		],
+	] as const) {
+		it(`keeps full root history for malformed compaction metadata: ${label}`, () => {
+			const entries = [
+				messageEntry("old-u", { role: "user", content: "old" }),
+				messageEntry("old-a", { role: "assistant", content: [] }),
+				messageEntry("live-u", { role: "user", content: "live" }),
+				{
+					type: "compaction",
+					firstKeptEntryId: "live-u",
+					details,
+				},
+			];
+
+			expect(
+				convertActiveEntriesToRawMessages(entries).map((message) => ({
+					ordinal: message.ordinal,
+					id: message.id,
+				})),
+			).toEqual([
+				{ ordinal: 1, id: "old-u" },
+				{ ordinal: 2, id: "old-a" },
+				{ ordinal: 3, id: "live-u" },
+			]);
+		});
+	}
+
+	it("exposes the full branch only for explicit recomp while normal reads stay on the active suffix", () => {
+		const entries = [
+			messageEntry("old-u", { role: "user", content: "old" }),
+			messageEntry("old-a", { role: "assistant", content: [] }),
+			messageEntry("live-u", { role: "user", content: "live" }),
+			messageEntry("live-a", { role: "assistant", content: [] }),
+			{
+				type: "compaction",
+				firstKeptEntryId: "live-u",
+				details: { source: "magic-context", lastCompactedOrdinal: 2 },
+			},
+		];
+		const ctx = {
+			sessionManager: { getBranch: () => entries },
+		} as never;
+		const readFullPiSessionMessages = (
+			readSessionPi as typeof readSessionPi & {
+				readFullPiSessionMessages?: typeof readPiSessionMessages;
+			}
+		).readFullPiSessionMessages;
+
+		expect(typeof readFullPiSessionMessages).toBe("function");
+		if (!readFullPiSessionMessages) return;
+		expect(
+			readFullPiSessionMessages(ctx).map((message) => ({
+				ordinal: message.ordinal,
+				id: message.id,
+			})),
+		).toEqual([
+			{ ordinal: 1, id: "old-u" },
+			{ ordinal: 2, id: "old-a" },
+			{ ordinal: 3, id: "live-u" },
+			{ ordinal: 4, id: "live-a" },
+		]);
+		expect(
+			readPiSessionMessages(ctx).map((message) => ({
+				ordinal: message.ordinal,
+				id: message.id,
+			})),
+		).toEqual([
+			{ ordinal: 3, id: "live-u" },
+			{ ordinal: 4, id: "live-a" },
+		]);
+	});
+
+	it("leaves the branch unchanged when the latest native compaction target is missing", () => {
+		const entries = [
+			messageEntry("old-u", { role: "user", content: "old" }),
+			{ type: "compaction", firstKeptEntryId: "missing" },
+			messageEntry("live-u", { role: "user", content: "live" }),
+		];
+
+		expect(sliceEntriesFromLatestCompaction(entries)).toEqual(entries);
+		expect(convertActiveEntriesToRawMessages(entries).map((m) => m.id)).toEqual(
+			["old-u", "live-u"],
+		);
+	});
+});
+
 describe("findFirstKeptEntryId — replay-safe boundary resolution", () => {
 	function messageEntry(
 		id: string,
@@ -420,6 +593,40 @@ describe("findFirstKeptEntryId — replay-safe boundary resolution", () => {
 	it("returns a real entry id when the boundary lands on a normal message", () => {
 		// boundary after ordinal 1 (u-0) → kept start is ordinal 2 (asst-1).
 		expect(findFirstKeptEntryId(entries, 1)).toBe("asst-1");
+	});
+
+	it("keeps root-relative boundary resolution for a marker without MC ordinals", () => {
+		const compactedEntries = [
+			messageEntry("old-u", { role: "user", content: "old" }),
+			messageEntry("old-a", { role: "assistant", content: [] }),
+			messageEntry("live-u", { role: "user", content: "live" }),
+			messageEntry("live-a", { role: "assistant", content: [] }),
+			{ type: "compaction", firstKeptEntryId: "live-u" },
+		];
+
+		// Without lastCompactedOrdinal the raw reader intentionally keeps the
+		// complete branch, so ordinal 1 is old-u and the next real entry is old-a.
+		expect(findFirstKeptEntryId(compactedEntries, 1)).toBe("old-a");
+	});
+
+	it("resolves kept-start ordinals after a Magic Context native marker", () => {
+		const compactedEntries = [
+			messageEntry("old-u", { role: "user", content: "old" }),
+			messageEntry("old-a", { role: "assistant", content: [] }),
+			messageEntry("live-u", { role: "user", content: "live" }),
+			messageEntry("live-a", { role: "assistant", content: [] }),
+			{
+				type: "compaction",
+				firstKeptEntryId: "live-u",
+				details: { source: "magic-context", lastCompactedOrdinal: 1855 },
+			},
+		];
+
+		// The active suffix starts at ordinal 1856, preserving continuity with
+		// existing compartments whose last end_message is 1855. Pre-fix this
+		// renumbered live-u/live-a to 1/2 and the historian skipped forever with
+		// nextStartOrdinal=1856 > rawMessageCount.
+		expect(findFirstKeptEntryId(compactedEntries, 1856)).toBe("live-a");
 	});
 
 	it("DEFERS (null) when the kept-start ordinal is a folded-toolResult synthetic user", () => {

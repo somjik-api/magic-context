@@ -30,6 +30,10 @@ describe("/ctx-session-upgrade detached execution contract", () => {
 		expect(codeOnly).toContain("spawnPiRecompRun(");
 	});
 
+	test("reads the full Pi branch because session upgrade recomp starts at message 1", () => {
+		expect(codeOnly).toContain("readFullPiSessionMessages(ctx)");
+	});
+
 	test("uses DEFERRED signals (background-safe), not eager", () => {
 		expect(codeOnly).toContain("signalPiDeferredHistoryRefresh(sessionId)");
 		expect(codeOnly).toContain("signalPiDeferredMaterialization(sessionId)");
