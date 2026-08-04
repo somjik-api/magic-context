@@ -594,30 +594,6 @@ export async function runPiHistorian(deps: PiHistorianDeps): Promise<void> {
 						100,
 				),
 			);
-			const reserve = forceDrainQuota
-				? { ok: true as const, reservation: null }
-				: reserveProtectedTailDrainTokens({
-						db,
-						sessionId,
-						runId: crypto.randomUUID(),
-						trueRawTokens: boundarySnapshot.trueRawEligibleTokens,
-						usagePercentage: boundarySnapshot.usagePercentage,
-						usable,
-						perRunCap,
-						executeThresholdPercentage:
-							boundarySnapshot.executeThresholdPercentage,
-					});
-			if (!reserve.ok) {
-				sessionLog(
-					sessionId,
-					`historian rate-limit skip: ${reserve.skippedReason ?? "quota exhausted"}`,
-				);
-				telemetry.status = "noop";
-				telemetry.failureReason = "protected-tail drain quota exhausted";
-				return;
-			}
-			drainReservation = reserve.reservation;
-
 			const chunk = readSessionChunk(
 				sessionId,
 				historianChunkTokens,
@@ -644,6 +620,30 @@ export async function runPiHistorian(deps: PiHistorianDeps): Promise<void> {
 				rollbackDrainReservation();
 				return;
 			}
+
+			const reserve = forceDrainQuota
+				? { ok: true as const, reservation: null }
+				: reserveProtectedTailDrainTokens({
+						db,
+						sessionId,
+						runId: crypto.randomUUID(),
+						trueRawTokens: chunk.tokenEstimate,
+						usagePercentage: boundarySnapshot.usagePercentage,
+						usable,
+						perRunCap,
+						executeThresholdPercentage:
+							boundarySnapshot.executeThresholdPercentage,
+					});
+			if (!reserve.ok) {
+				sessionLog(
+					sessionId,
+					`historian rate-limit skip: ${reserve.skippedReason ?? "quota exhausted"}`,
+				);
+				telemetry.status = "noop";
+				telemetry.failureReason = "protected-tail drain quota exhausted";
+				return;
+			}
+			drainReservation = reserve.reservation;
 
 			const chunkCoverageError = validateChunkCoverage(chunk);
 			if (chunkCoverageError) {
@@ -1242,13 +1242,27 @@ export async function runPiHistorian(deps: PiHistorianDeps): Promise<void> {
 				}
 			}
 
+			// COMMIT consumes the reservation: no later best-effort callback may refund
+			// quota for durable compartments that are already visible to the session.
+			drainReservation = null;
+			completedSuccessfully = true;
+
 			// Signal deferred materialization/history-refresh immediately after COMMIT.
 			// All publish-visible durable state (compartments, boundary floor, promoted
 			// facts, event attempts, and drop queue) is already in the transaction above;
 			// embedding registration and provider calls below are post-commit best-effort
 			// and must never leave a committed publish marked failed or unsignaled.
-			onPublished?.();
-			completedSuccessfully = true;
+			try {
+				onPublished?.();
+			} catch (error) {
+				sessionLog(
+					sessionId,
+					"historian post-commit publication signal failed",
+					{
+						error: describeError(error).brief,
+					},
+				);
+			}
 
 			sessionLog(
 				sessionId,

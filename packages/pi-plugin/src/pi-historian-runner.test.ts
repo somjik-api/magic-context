@@ -289,6 +289,52 @@ describe("runPiHistorian", () => {
 		}
 	});
 
+	it("charges protected-tail drain quota by the actual Pi chunk, not the whole eligible head", async () => {
+		const boundary = makeBoundarySnapshot({
+			trueRawEligibleTokens: 50_000,
+			N: 1_000,
+			usagePercentage: 96,
+		});
+		const { db, runner } = await runHistorianWith({
+			outputs: [successXml()],
+			boundarySnapshot: boundary,
+			providerMessages: rawMessages(6),
+		});
+		try {
+			expect(runner.run.mock.calls.length).toBeGreaterThan(0);
+			const charged = loadProtectedTailMeta(
+				db,
+				"ses-historian",
+			).protectedTailDrainTokens;
+			expect(charged).toBeGreaterThan(0);
+			expect(charged).toBeLessThan(4_000);
+		} finally {
+			closeQuietly(db);
+		}
+	});
+
+	it("keeps actual-chunk quota charged when post-commit publication signaling throws", async () => {
+		const onPublished = mock(() => {
+			throw new Error("post-commit signal failed");
+		});
+		const { db } = await runHistorianWith({
+			outputs: [successXml()],
+			onPublished,
+		});
+		try {
+			expect(onPublished).toHaveBeenCalledTimes(1);
+			expect(getCompartments(db, "ses-historian")).toHaveLength(1);
+			expect(
+				loadProtectedTailMeta(db, "ses-historian").protectedTailDrainTokens,
+			).toBeGreaterThan(0);
+			expect(getHistorianFailureState(db, "ses-historian").failureCount).toBe(
+				0,
+			);
+		} finally {
+			closeQuietly(db);
+		}
+	});
+
 	it("skips when the protected-tail drain quota is exhausted", async () => {
 		const boundary = makeBoundarySnapshot();
 		const usable = Math.round(
