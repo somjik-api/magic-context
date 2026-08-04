@@ -11,6 +11,7 @@ import { SynapseEmbeddingProvider } from "./embedding-synapse";
 
 export type {
     EmbeddingFeatures,
+    ProjectEmbeddingRegistrationOptions,
     ProjectEmbeddingRegistrationSnapshot,
 } from "../project-embedding-registry";
 export {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { EmbeddingConfig } from "../../config/schema/magic-context";
+import { Database } from "../../shared/sqlite";
 import {
     chunkCanonicalText,
     loadCompartmentChunkEmbeddingsForSearch,
@@ -302,6 +303,61 @@ describe("project embedding registry", () => {
 
         expect(calls).toContain("BEGIN IMMEDIATE");
         expect(calls).toContain("COMMIT");
+    });
+
+    it("supports snapshot-only registration without running storage maintenance", async () => {
+        _setTestProviderFactoryForProject(
+            (config) =>
+                new FakeEmbeddingProvider(config.provider === "local" ? config.model : "off"),
+        );
+        const schemaLessDb = new Database(":memory:");
+        try {
+            const snapshot = registerProjectEmbedding(
+                schemaLessDb,
+                "git:subagent",
+                localConfig("model-subagent"),
+                { memoryEnabled: true, gitCommitEnabled: true },
+                "/tmp/subagent",
+                { maintenance: false },
+            );
+            const vector = await embedTextForProject("git:subagent", "hello");
+
+            expect(snapshot.projectIdentity).toBe("git:subagent");
+            expect(snapshot.enabled).toBe(true);
+            expect(snapshot.gitCommitEnabled).toBe(true);
+            expect(vector?.vector[1]).toBe("model-subagent".length);
+        } finally {
+            schemaLessDb.close();
+        }
+    });
+
+    it("keeps snapshot-only registration process-local when descriptor storage exists", () => {
+        const db = useTempDb();
+        db.exec(`
+            CREATE TRIGGER reject_snapshot_descriptor_write
+            BEFORE INSERT ON embedding_registrations
+            BEGIN
+                SELECT RAISE(ABORT, 'snapshot descriptor write');
+            END;
+        `);
+
+        expect(() =>
+            registerProjectEmbedding(
+                db,
+                "git:snapshot-only",
+                localConfig("model-subagent"),
+                { memoryEnabled: true, gitCommitEnabled: true },
+                "/tmp/subagent",
+                { maintenance: false },
+            ),
+        ).not.toThrow();
+        expect(
+            db
+                .prepare(
+                    "SELECT COUNT(*) AS count FROM embedding_registrations WHERE project_path = ?",
+                )
+                .get("git:snapshot-only"),
+        ).toEqual({ count: 0 });
     });
 
     it("drainCommitBacklogForProject embeds pre-indexed commits with no new git log work", async () => {

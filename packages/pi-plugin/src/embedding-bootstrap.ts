@@ -5,6 +5,7 @@ import {
 } from "@magic-context/core/config/migrate-config-location";
 import {
 	type EmbeddingFeatures,
+	type ProjectEmbeddingRegistrationOptions,
 	registerProjectEmbedding,
 } from "@magic-context/core/features/magic-context/memory/embedding";
 import { resolveProjectIdentityForSession } from "@magic-context/core/features/magic-context/memory/project-identity";
@@ -53,9 +54,10 @@ function configFingerprint(paths: readonly string[]): string {
 		.join("|");
 }
 
-export async function ensureProjectRegisteredFromPiDirectory(
+async function ensureProjectRegisteredFromPiDirectoryWithOptions(
 	directory: string,
 	db: ContextDatabase,
+	options: ProjectEmbeddingRegistrationOptions,
 ): Promise<void> {
 	const projectIdentity = resolveProjectIdentityForSession(directory);
 	if (!projectIdentity) return;
@@ -83,6 +85,7 @@ export async function ensureProjectRegisteredFromPiDirectory(
 		detailed.config.embedding,
 		features,
 		directory,
+		options,
 	);
 	const fingerprintPaths = configCandidatePaths(
 		directory,
@@ -91,5 +94,32 @@ export async function ensureProjectRegisteredFromPiDirectory(
 	registrationFingerprints.set(projectIdentity, {
 		paths: fingerprintPaths,
 		fingerprint: configFingerprint(fingerprintPaths),
+	});
+}
+
+export async function ensureProjectRegisteredFromPiDirectory(
+	directory: string,
+	db: ContextDatabase,
+): Promise<void> {
+	await ensureProjectRegisteredFromPiDirectoryWithOptions(directory, db, {
+		maintenance: true,
+	});
+}
+
+/**
+ * Install only the process-local embedding registration for a lean child.
+ *
+ * This scopes `snapshot` to embedding lifecycle state: the caller still opens
+ * the shared database through the normal schema-safe path because ctx_* tools
+ * need a migrated, write-capable connection. What this suppresses is global
+ * embedding maintenance (identity repair, ledger GC, vector repair, and
+ * descriptor persistence) that child processes neither own nor need.
+ */
+export async function ensureProjectEmbeddingSnapshotFromPiDirectory(
+	directory: string,
+	db: ContextDatabase,
+): Promise<void> {
+	await ensureProjectRegisteredFromPiDirectoryWithOptions(directory, db, {
+		maintenance: false,
 	});
 }

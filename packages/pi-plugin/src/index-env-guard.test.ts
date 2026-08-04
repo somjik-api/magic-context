@@ -9,6 +9,7 @@ import { MAGIC_CONTEXT_PI_SUBAGENT_ENV } from "./subagent-runner";
 
 const originalEnv = {
 	MAGIC_CONTEXT_PI_SUBAGENT: process.env.MAGIC_CONTEXT_PI_SUBAGENT,
+	PI_SUBAGENT_CHILD: process.env.PI_SUBAGENT_CHILD,
 	XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
 	XDG_DATA_HOME: process.env.XDG_DATA_HOME,
 };
@@ -77,6 +78,7 @@ describe("Pi full extension subagent env guard", () => {
 	it("registers the full runtime when the subagent guard is absent", async () => {
 		isolateXdgEnv();
 		delete process.env[MAGIC_CONTEXT_PI_SUBAGENT_ENV];
+		delete process.env.PI_SUBAGENT_CHILD;
 		const registrations = createCountingPi();
 
 		await magicContextPiExtension(registrations.pi);
